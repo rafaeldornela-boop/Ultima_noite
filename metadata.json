@@ -1,0 +1,6 @@
+{
+  "name": "Último Dia — Sobrevivência",
+  "description": "Jogo mobile de sobrevivência zumbi com decisões narrativas, gerenciamento de abrigo, expedições, recursos e morte permanente.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

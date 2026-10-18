@@ -1,0 +1,70 @@
+name: Build Android Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-android-apk:
+    name: Compilar APK de Depuração (Capacitor 8)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: 2. Configurar Node.js 22 e cache do npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: 3. Configurar JDK 21 ( compatível com Capacitor 8 / Android Gradle )
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: 4. Instalar dependências com lockfile
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: 5. Executar verificação de tipos e testes automatizados
+        run: |
+          npm run lint
+          npm test
+          npm run test:node
+
+      - name: 6. Executar build de produção do Vite
+        run: npm run build
+
+      - name: 7. Preparar plataforma Android com Capacitor 8 (se ainda não versionada)
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: 8. Sincronizar ativos web e plugins com o projeto Android
+        run: npx cap sync android
+
+      - name: 9. Compilar APK de depuração com Gradle Wrapper
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../ultimo-dia-debug.apk
+
+      - name: 10. Publicar APK como artefato do workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultimo-dia-debug.apk
+          path: ultimo-dia-debug.apk
+          if-no-files-found: error
+          retention-days: 14
