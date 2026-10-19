@@ -15,15 +15,19 @@ export type DistrictId = 'vila_esperanca' | 'centro_comercial' | 'complexo_medic
 export type TimeOfDay = 'dia' | 'entardecer' | 'noite' | 'madrugada';
 
 export type ContainerType =
-  | 'caixa'
-  | 'mochila'
   | 'armario'
+  | 'gaveta'
   | 'geladeira'
   | 'gondola'
   | 'porta_malas'
+  | 'porta_luvas'
   | 'cofre'
   | 'maca'
-  | 'bancada';
+  | 'bancada'
+  | 'mochila'
+  | 'caixa';
+
+export type LootSearchState = 'available' | 'searching' | 'searched';
 
 export interface ObstacleRect {
   id: string;
@@ -48,14 +52,17 @@ export interface BuildingZone {
 export interface LootSpot {
   id: string;
   label: string;
+  actionVerb?: string;
   kind: 'comida' | 'medicamentos' | 'municao' | 'materiais' | 'misto';
   containerType: ContainerType;
-  searchDuration: number; // e.g. 0.8s for mochila, 1.2s for armario, 2.0s for cofre
-  noiseOnSearch: boolean; // squeaky cabinet/safe emits diegetic sound alerting zombies
+  obstacleId?: string;
+  searchDuration: number; // e.g. 0.8s for gaveta, 1.2s for armario, 2.0s for cofre
+  noiseOnSearch: boolean; // squeaky cabinet/safe/trunk emits diegetic sound alerting zombies
   x: number;
   y: number;
   radius: number;
   looted: boolean;
+  searchState?: LootSearchState;
   contents: Partial<ActionLootBag>;
 }
 
@@ -185,6 +192,8 @@ export interface InteractPrompt {
   targetType: 'loot' | 'extraction';
   id: string;
   label: string;
+  actionVerb?: string;
+  containerType?: ContainerType;
   x: number;
   y: number;
 }
@@ -212,7 +221,7 @@ export interface ActionWorldState {
   districtName: string;
   timeOfDay: TimeOfDay;
   dayNightClock: number; // seconds into expedition
-  ambientDarkness: number; // 0.15 (bright day) to 0.82 (pitch night)
+  ambientDarkness: number; // 0.08 (bright day) to 0.45 (night)
   isInsideBuilding: boolean;
   currentBuildingName: string | null;
   status: RunStatus;
@@ -229,6 +238,7 @@ export interface ActionWorldState {
   buildings: BuildingZone[];
   extractionZone: ExtractionZone;
   runLoot: ActionLootBag;
+  maxCarryCapacity: number;
   zombiesKilled: number;
   shotsFired: number;
   activePrompt: InteractPrompt | null;

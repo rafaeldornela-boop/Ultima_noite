@@ -11,6 +11,8 @@ import {
   performAttack,
   stepWorld,
   triggerInteract,
+  WEAPON_CONFIG,
+  ZOMBIE_ARCHETYPE_CONFIG,
 } from '../src/action/actionRules.ts';
 
 test('Top-Down Action: movimentação em 8 direções e bloqueio por paredes', () => {
@@ -116,7 +118,7 @@ test('Top-Down Action: saque automático por proximidade sem necessidade de tecl
   world.player.x = spot.x;
   world.player.y = spot.y;
 
-  // Step for 0.4s (within 0.9s duration): looting in progress
+  // Step for 0.4s (within duration): looting in progress
   for (let i = 0; i < 8; i++) {
     stepWorld(world, createDefaultInputState(), 0.05);
   }
@@ -124,8 +126,8 @@ test('Top-Down Action: saque automático por proximidade sem necessidade de tecl
   assert.equal(world.activeLooting?.spotId, spot.id);
   assert.equal(spot.looted, false);
 
-  // Step further to complete the 0.9s duration
-  for (let i = 0; i < 15; i++) {
+  // Step further to complete the search duration
+  for (let i = 0; i < 55; i++) {
     stepWorld(world, createDefaultInputState(), 0.05);
   }
   assert.equal(spot.looted, true);
@@ -144,25 +146,21 @@ test('Top-Down Action: saque automático por proximidade sem necessidade de tecl
 
 test('Top-Down Action: sistema de ruído de disparo atrai zumbis distantes', () => {
   const world = createInitialWorldState('node_noise_test');
-  // Position a zombie beyond sight detection range (e.g. 400px away)
   const z = createZombieFromArchetype('z_far', 'lento', 650, 980);
-  z.detectionRange = 200; // Normal sight restricted to 200px
+  z.detectionRange = 200;
   world.zombies = [z];
   world.player.x = 220;
   world.player.y = 980;
   world.player.facingAngle = 0;
 
-  // Before gunshot: zombie does not move towards player
   stepWorld(world, createDefaultInputState(), 0.05);
   assert.equal(z.vx, 0);
 
-  // Fire gun: acoustic impulse propagates 480px and reaches zombie
   performAttack(world);
   assert.ok(world.noiseEvents.length > 0);
 
-  // Step world: zombie is alerted by noise and pursues towards player
   stepWorld(world, createDefaultInputState(), 0.05);
-  assert.ok(z.vx < 0); // Moving left towards player at x=220
+  assert.ok(z.vx < 0);
 });
 
 test('Top-Down Action: botão de disparo inicia recarga quando o pente está vazio', () => {
@@ -176,7 +174,6 @@ test('Top-Down Action: botão de disparo inicia recarga quando o pente está vaz
   assert.equal(res.type, 'empty');
   assert.ok(world.player.reloadTimer > 0);
 
-  // Step world through reload completion
   for (let i = 0; i < 25; i++) {
     stepWorld(world, createDefaultInputState(), 0.05);
   }
@@ -207,14 +204,12 @@ test('Top-Down Action: lanterna consome bateria e desliga ao esgotar', () => {
   assert.equal(world.player.flashlight.enabled, true);
   assert.equal(world.player.flashlight.battery, 100);
 
-  // Step 10 seconds with flashlight on
   for (let i = 0; i < 100; i++) {
     stepWorld(world, createDefaultInputState(), 0.1);
   }
   assert.ok(world.player.flashlight.battery < 100);
   assert.ok(world.player.flashlight.battery > 50);
 
-  // Deplete battery to 0
   world.player.flashlight.battery = 0.05;
   stepWorld(world, createDefaultInputState(), 0.1);
   assert.equal(world.player.flashlight.enabled, false);
@@ -232,14 +227,12 @@ test('Top-Down Action: cura por atadura requer canalização de tempo e cancela 
 
   assert.ok(world.player.healing !== null);
   assert.equal(world.player.healing?.active, true);
-  assert.equal(world.player.hp, 40); // Not healed immediately!
+  assert.equal(world.player.hp, 40);
 
-  // Suffering damage cancels healing immediately
   applyDamageToPlayer(world, 10, 'Errante');
   assert.equal(world.player.healing, null);
-  assert.equal(world.runLoot.medicamentos, 2); // Medkit preserved because heal was cancelled!
+  assert.equal(world.runLoot.medicamentos, 2);
 
-  // Re-start healing and step through full duration (2.2s)
   inp.healJustPressed = true;
   stepWorld(world, inp, 0.05);
   for (let i = 0; i < 50; i++) {
@@ -247,37 +240,68 @@ test('Top-Down Action: cura por atadura requer canalização de tempo e cancela 
   }
 
   assert.equal(world.player.healing, null);
-  assert.equal(world.player.hp, 65); // 30 + 35 = 65 PV
+  assert.equal(world.player.hp, 65);
   assert.equal(world.runLoot.medicamentos, 1);
 });
 
 test('Top-Down Action: visão direcional e furtividade pelas costas de zumbis', () => {
   const world = createInitialWorldState('node_stealth');
-  // Place zombie facing East (angle = 0)
   const z = createZombieFromArchetype('z_look_east', 'lento', 500, 500);
-  z.facingAngle = 0; // Looking East (to the right)
+  z.facingAngle = 0;
   world.zombies = [z];
 
-  // Player stands directly behind zombie at x=350, y=500 (150px West)
   world.player.x = 350;
   world.player.y = 500;
   world.player.flashlight.enabled = false;
-  world.ambientDarkness = 0.75; // Night darkness
+  world.ambientDarkness = 0.75;
 
   stepWorld(world, createDefaultInputState(), 0.05);
-  // Zombie does NOT see the player because player is behind the zombie's vision cone
   assert.equal(z.alertState, 'idle');
   assert.equal(z.vx, 0);
 
-  // Now player moves into the zombie's frontal cone at x=650, y=500 (East of zombie)
   world.player.x = 650;
   world.player.y = 500;
-  world.player.flashlight.enabled = true; // Flashlight beam illuminates into zombie's front!
+  world.player.flashlight.enabled = true;
 
   stepWorld(world, createDefaultInputState(), 0.05);
-  // Zombie detects player visually in its front cone!
   assert.equal(z.alertState, 'hunting');
-  assert.ok(z.vx > 0); // Advances East towards player
+  assert.ok(z.vx > 0);
 });
+
+test('Top-Down Action: zumbis comuns mais lentos (~60%), cone do facão obstruído por parede e parada imediata do joystick', () => {
+  assert.ok(ZOMBIE_ARCHETYPE_CONFIG.lento.speed >= 34 && ZOMBIE_ARCHETYPE_CONFIG.lento.speed <= 41);
+
+  const world = createInitialWorldState('node_integrated_v2');
+  world.player.x = 500;
+  world.player.y = 500;
+  world.player.facingAngle = 0;
+  world.player.equippedWeapon = 'facao';
+
+  const zFront = createZombieFromArchetype('z_front', 'lento', 555, 500);
+  world.zombies = [zFront];
+  world.obstacles = [];
+
+  const hitRes = performAttack(world);
+  assert.equal(hitRes.hits, 1);
+  assert.equal(zFront.hp, zFront.maxHp - WEAPON_CONFIG.facao.damage);
+
+  // Obstrução por parede bloqueia o cone do facão
+  world.player.attackCooldown = 0;
+  world.obstacles = [{ id: 'w1', x: 525, y: 470, width: 12, height: 60, kind: 'wall' }];
+  const blockedRes = performAttack(world);
+  assert.equal(blockedRes.hits, 0);
+
+  // Parada imediata ao soltar o joystick
+  world.hitstopTimer = 0;
+  const moveIn = createDefaultInputState();
+  moveIn.moveX = 1;
+  stepWorld(world, moveIn, 0.05);
+  assert.ok(world.player.vx > 0);
+
+  stepWorld(world, createDefaultInputState(), 0.05);
+  assert.equal(world.player.vx, 0);
+  assert.equal(world.player.vy, 0);
+});
+
 
 

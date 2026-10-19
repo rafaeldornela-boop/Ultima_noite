@@ -34,10 +34,16 @@ interface HudReadout {
   lootMedicamentos: number;
   lootMunicao: number;
   lootMateriais: number;
+  lootTotal: number;
+  maxCarryCapacity: number;
+  isBackpackFull: boolean;
   zombiesKilled: number;
   zombiesRemaining: number;
   promptLabel: string | null;
+  promptActionVerb: string | null;
   promptType: 'loot' | 'extraction' | null;
+  isSearchingLoot: boolean;
+  lootSearchProgress: number;
   banner: string;
   distToExtractionMeters: number;
   angleToExtractionRad: number;
@@ -56,6 +62,12 @@ interface HudReadout {
 
 function buildHudReadout(w: ActionWorldState): HudReadout {
   const minimap = buildMinimapSnapshot(w, 128, 96);
+  const lootTotal =
+    w.runLoot.comida +
+    w.runLoot.medicamentos +
+    w.runLoot.municao +
+    w.runLoot.materiais;
+  const maxCarryCapacity = w.maxCarryCapacity ?? 18;
 
   return {
     hp: Math.round(w.player.hp),
@@ -71,10 +83,20 @@ function buildHudReadout(w: ActionWorldState): HudReadout {
     lootMedicamentos: w.runLoot.medicamentos,
     lootMunicao: w.runLoot.municao,
     lootMateriais: w.runLoot.materiais,
+    lootTotal,
+    maxCarryCapacity,
+    isBackpackFull: lootTotal >= maxCarryCapacity,
     zombiesKilled: w.zombiesKilled,
     zombiesRemaining: w.zombies.filter((z) => !z.dead).length,
     promptLabel: w.activePrompt ? w.activePrompt.label : null,
+    promptActionVerb: w.activePrompt
+      ? w.activePrompt.actionVerb || w.activePrompt.label
+      : null,
     promptType: w.activePrompt ? w.activePrompt.targetType : null,
+    isSearchingLoot: !!w.activeLooting,
+    lootSearchProgress: w.activeLooting
+      ? Math.min(100, Math.round((w.activeLooting.progress / w.activeLooting.duration) * 100))
+      : 0,
     banner: w.lastEventBanner,
     distToExtractionMeters: minimap.extraction.distanceMeters,
     angleToExtractionRad: minimap.extraction.bearingRad,
@@ -98,7 +120,6 @@ export function PhaserArena({
   isMuted,
   reducedEffects,
   onToggleMute,
-  onToggleReducedEffects,
   onTogglePause,
   onRunFinished,
 }: PhaserArenaProps) {
@@ -135,6 +156,60 @@ export function PhaserArena({
   const rightStickRef = useRef<HTMLDivElement | null>(null);
   const rightKnobRef = useRef<HTMLDivElement | null>(null);
   const rightPointerIdRef = useRef<number | null>(null);
+
+  const resetLeftJoystick = useCallback(() => {
+    leftPointerIdRef.current = null;
+    bridgeRef.current.joyMoveX = 0;
+    bridgeRef.current.joyMoveY = 0;
+    bridgeRef.current.sprintHeld = false;
+    setFloatingJoy((prev) => (prev.visible ? { ...prev, visible: false, knobX: 0, knobY: 0 } : prev));
+  }, []);
+
+  const resetRightStick = useCallback(() => {
+    rightPointerIdRef.current = null;
+    bridgeRef.current.attackHeld = false;
+    bridgeRef.current.aimAngle = null;
+    if (rightKnobRef.current) {
+      rightKnobRef.current.style.transform = 'translate3d(0px, 0px, 0)';
+    }
+  }, []);
+
+  // Global window pointer/touch/blur safety listeners so controls NEVER stay stuck
+  useEffect(() => {
+    const handleGlobalPointerEnd = (e: PointerEvent) => {
+      if (leftPointerIdRef.current !== null && e.pointerId === leftPointerIdRef.current) {
+        resetLeftJoystick();
+      }
+      if (rightPointerIdRef.current !== null && e.pointerId === rightPointerIdRef.current) {
+        resetRightStick();
+      }
+    };
+
+    const handleGlobalResetAll = () => {
+      resetLeftJoystick();
+      resetRightStick();
+    };
+
+    window.addEventListener('pointerup', handleGlobalPointerEnd);
+    window.addEventListener('pointercancel', handleGlobalPointerEnd);
+    window.addEventListener('blur', handleGlobalResetAll);
+    document.addEventListener('visibilitychange', handleGlobalResetAll);
+
+    return () => {
+      window.removeEventListener('pointerup', handleGlobalPointerEnd);
+      window.removeEventListener('pointercancel', handleGlobalPointerEnd);
+      window.removeEventListener('blur', handleGlobalResetAll);
+      document.removeEventListener('visibilitychange', handleGlobalResetAll);
+    };
+  }, [resetLeftJoystick, resetRightStick]);
+
+  // Also reset movement if game becomes paused
+  useEffect(() => {
+    if (isPaused) {
+      resetLeftJoystick();
+      resetRightStick();
+    }
+  }, [isPaused, resetLeftJoystick, resetRightStick]);
 
   const handleHudSync = useCallback((w: ActionWorldState) => {
     (window as unknown as { __ULTIMO_DIA_WORLD__?: ActionWorldState }).__ULTIMO_DIA_WORLD__ = w;
@@ -189,13 +264,17 @@ export function PhaserArena({
 
   // Floating Touch Joystick handlers (left 50% of the screen)
   const maxJoyRadius = 52;
+  const deadzoneRadius = 6;
 
   const onLeftZonePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    // Only capture if not clicking an interactive button/element and left pointer not already active
     if (leftPointerIdRef.current !== null) return;
     if ((e.target as HTMLElement).closest('button, [role="button"], [role="group"]')) return;
 
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic events without active pointerId
+    }
     leftPointerIdRef.current = e.pointerId;
 
     setFloatingJoy({
@@ -218,6 +297,14 @@ export function PhaserArena({
       const dx = e.clientX - prev.startX;
       const dy = e.clientY - prev.startY;
       const dist = Math.hypot(dx, dy);
+
+      if (dist <= deadzoneRadius) {
+        bridgeRef.current.joyMoveX = 0;
+        bridgeRef.current.joyMoveY = 0;
+        bridgeRef.current.sprintHeld = false;
+        return { ...prev, knobX: 0, knobY: 0 };
+      }
+
       const clampedDist = Math.min(dist, maxJoyRadius);
       const angle = Math.atan2(dy, dx);
 
@@ -241,11 +328,7 @@ export function PhaserArena({
 
   const onLeftZonePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (leftPointerIdRef.current === e.pointerId) {
-      leftPointerIdRef.current = null;
-      bridgeRef.current.joyMoveX = 0;
-      bridgeRef.current.joyMoveY = 0;
-      bridgeRef.current.sprintHeld = false;
-      setFloatingJoy((prev) => ({ ...prev, visible: false }));
+      resetLeftJoystick();
     }
   };
 
@@ -264,7 +347,7 @@ export function PhaserArena({
     const clampedDist = Math.min(dist, maxRadius);
     const angle = Math.atan2(dy, dx);
 
-    if (dist > 8) {
+    if (dist > 7) {
       bridgeRef.current.aimAngle = angle;
     }
     bridgeRef.current.attackHeld = true;
@@ -273,15 +356,6 @@ export function PhaserArena({
       const kx = Math.cos(angle) * clampedDist;
       const ky = Math.sin(angle) * clampedDist;
       rightKnobRef.current.style.transform = `translate3d(${kx.toFixed(1)}px, ${ky.toFixed(1)}px, 0)`;
-    }
-  };
-
-  const resetRightStick = () => {
-    rightPointerIdRef.current = null;
-    bridgeRef.current.attackHeld = false;
-    bridgeRef.current.aimAngle = null;
-    if (rightKnobRef.current) {
-      rightKnobRef.current.style.transform = 'translate3d(0px, 0px, 0)';
     }
   };
 
@@ -300,34 +374,69 @@ export function PhaserArena({
         className="w-full h-full"
       />
 
-      {/* Seamless Darkwood-inspired Peripheral Darkness Vignette */}
+      {/* Balanced Peripheral Vignette (preserves center and ambient visibility) */}
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_50%_50%,transparent_26%,rgba(8,7,6,0.42)_62%,rgba(5,4,4,0.84)_100%)]"
+        className="pointer-events-none fixed inset-0 z-10 bg-[radial-gradient(circle_at_50%_50%,transparent_48%,rgba(8,7,6,0.22)_78%,rgba(5,4,4,0.48)_100%)]"
       />
 
       {/* Critical Low HP Peripheral Vignette (respects reducedEffects comfort mode) */}
       {hud.hp <= 30 && !reducedEffects && (
         <div
           aria-hidden="true"
-          className="pointer-events-none fixed inset-0 border-[6px] border-[#8f241b]/45"
+          className="pointer-events-none fixed inset-0 z-10 border-[5px] border-[#8f241b]/45"
         />
       )}
 
-      {/* Full-Viewport Utilitarian Survival HUD Wrapper */}
-      <div className="pointer-events-none fixed inset-0 flex flex-col justify-between p-2 sm:p-3.5">
-        {/* TOP PERIMETER BAR: Left Vitals & Weapon | Center Status | Right Loot, Minimap & Controls */}
+      {/* FLOATING JOYSTICK TOUCH SURFACE (Covers the left 50% of the screen, below HUD buttons) */}
+      <div
+        data-testid="floating-joystick-touchzone"
+        onPointerDown={onLeftZonePointerDown}
+        onPointerMove={onLeftZonePointerMove}
+        onPointerUp={onLeftZonePointerUp}
+        onPointerCancel={onLeftZonePointerUp}
+        onLostPointerCapture={onLeftZonePointerUp}
+        className="fixed inset-y-0 left-0 w-1/2 z-20 touch-none"
+      >
+        {/* Floating Joystick Base and Knob (Only visible when actively touching) */}
+        {floatingJoy.visible && (
+          <div
+            style={{
+              left: floatingJoy.startX,
+              top: floatingJoy.startY,
+              transform: 'translate(-50%, -50%)',
+            }}
+            className="pointer-events-none absolute w-28 h-28 rounded-full bg-[#110f0d]/60 border border-[#c87a28]/60 flex items-center justify-center shadow-2xl"
+          >
+            <div className="w-full h-[1px] bg-[#c87a28]/30 absolute" />
+            <div className="h-full w-[1px] bg-[#c87a28]/30 absolute" />
+
+            <div
+              style={{
+                transform: `translate3d(${floatingJoy.knobX.toFixed(1)}px, ${floatingJoy.knobY.toFixed(1)}px, 0)`,
+              }}
+              className="w-11 h-11 rounded-full bg-[#2b241d]/95 border border-[#e09132] shadow-lg flex items-center justify-center"
+            >
+              <div className="w-2.5 h-2.5 rounded-full bg-[#e09132]" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Full-Viewport Clean Tactical HUD Wrapper (z-30 so buttons are never blocked by touch zone) */}
+      <div className="pointer-events-none fixed inset-0 z-30 flex flex-col justify-between p-2 sm:p-3">
+        {/* TOP PERIMETER BAR: Compact Left Vitals & Weapon | Center Status | Compact Right Backpack & System */}
         <div className="flex items-start justify-between gap-2">
-          {/* Top-Left Cluster: Utilitarian Field Vitals & Equipped Weapon */}
-          <div className="pointer-events-auto rounded-sm bg-[#110f0d]/92 border border-[#2e2722] p-2 sm:p-2.5 w-44 sm:w-56 space-y-1.5 shadow-xl">
+          {/* Top-Left Cluster: Compact Vitals & Weapon Switch */}
+          <div className="pointer-events-auto rounded-sm bg-[#110f0d]/85 border border-[#2e2722] p-2 w-44 sm:w-52 space-y-1.5 shadow-lg">
             {/* HP Bar */}
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               <div className="flex items-center justify-between text-[10px]">
-                <span className="font-bold uppercase tracking-widest text-[#b8afa4]">
-                  Integridade
+                <span className="font-bold uppercase tracking-wider text-[#b8afa4]">
+                  Saúde
                 </span>
                 <span className="font-mono-tabular font-bold text-[#ebe5dc]">
-                  {hud.hp}/{hud.maxHp} PV
+                  {hud.hp}/{hud.maxHp}
                 </span>
               </div>
               <div className="h-2 w-full bg-[#090807] border border-[#241f1b] overflow-hidden">
@@ -347,7 +456,7 @@ export function PhaserArena({
             {/* Stamina Bar */}
             <div className="space-y-0.5">
               <div className="flex items-center justify-between text-[9px]">
-                <span className="uppercase tracking-widest text-[#8c8277]">
+                <span className="uppercase tracking-wider text-[#8c8277]">
                   Fôlego
                 </span>
                 <span className="font-mono-tabular text-[#b8afa4]">
@@ -363,25 +472,25 @@ export function PhaserArena({
             </div>
 
             {/* Equipped Weapon & Ammo Readout */}
-            <div className="pt-1.5 border-t border-[#241f1b] flex items-center justify-between gap-1.5">
+            <div className="pt-1 border-t border-[#241f1b] flex items-center justify-between gap-1.5">
               <div className="min-w-0">
-                <div className="text-[9px] uppercase tracking-widest text-[#c87a28] font-bold truncate">
+                <div className="text-[9px] uppercase tracking-wider text-[#c87a28] font-bold truncate">
                   {hud.weapon === 'pistola' ? 'Pistola 9mm' : 'Facão Tático'}
                 </div>
-                <div className="font-mono-tabular text-xs sm:text-sm font-bold text-[#ebe5dc]">
+                <div className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
                   {hud.weapon === 'pistola' ? (
                     hud.isReloading ? (
                       <span className="text-[#c87a28] text-[10px]">RECARREGANDO...</span>
                     ) : (
                       <span className={hud.ammoInClip === 0 ? 'text-[#c94a38]' : ''}>
                         {hud.ammoInClip}
-                        <span className="text-[11px] text-[#8c8277]">
+                        <span className="text-[10px] text-[#8c8277]">
                           /{hud.ammoReserve}
                         </span>
                       </span>
                     )
                   ) : (
-                    <span className="text-[10px] text-[#9e9185]">Lâmina Curta</span>
+                    <span className="text-[10px] text-[#52b788]">Cone Curto</span>
                   )}
                 </div>
               </div>
@@ -389,83 +498,83 @@ export function PhaserArena({
               <button
                 type="button"
                 tabIndex={-1}
+                data-testid="hud-switch-weapon"
                 onClick={(e) => {
                   e.currentTarget.blur();
                   bridgeRef.current.queuedSwitchWeapon = true;
                 }}
-                className="min-h-[36px] px-2 py-1 rounded-sm bg-[#1c1815] hover:bg-[#29231e] border border-[#382f28] text-[10px] font-bold uppercase tracking-wider text-[#ebe5dc] whitespace-nowrap shrink-0"
+                className="min-h-[34px] px-2.5 py-1 rounded-sm bg-[#1c1815] hover:bg-[#29231e] active:scale-95 border border-[#382f28] text-[10px] font-bold uppercase tracking-wider text-[#ebe5dc] whitespace-nowrap shrink-0"
               >
-                Arma<span className="hidden sm:inline"> [Q]</span>
+                {hud.weapon === 'pistola' ? '🗡️ Facão' : '🔫 Pistola'}
+                <span className="hidden sm:inline text-[#8c8277]"> [Q]</span>
               </button>
             </div>
           </div>
 
-          {/* Top-Center Cluster: Field Radio, District & Time of Day */}
-          <div className="hidden md:flex flex-col items-center gap-1 max-w-lg text-center">
-            <div className="rounded-sm bg-[#110f0d]/92 border border-[#2e2722] px-3 py-1 text-[11px] text-[#d6cec2] flex items-center gap-2.5 shadow">
+          {/* Top-Center Cluster: Compact District, Extraction & Event Banner */}
+          <div className="hidden md:flex flex-col items-center gap-1 max-w-md text-center">
+            <div className="rounded-sm bg-[#110f0d]/85 border border-[#2e2722] px-2.5 py-1 text-[10px] text-[#d6cec2] flex items-center gap-2 shadow">
               <span className="font-bold uppercase tracking-wider text-[#e09132]">
                 {hud.districtName}
-              </span>
-              <span aria-hidden="true" className="text-[#4a3e35]">|</span>
-              <span className="text-[11px] font-semibold text-[#f59e0b]">
-                {hud.timeOfDay === 'dia'
-                  ? '☀️ Dia'
-                  : hud.timeOfDay === 'entardecer'
-                  ? '🌅 Entardecer'
-                  : hud.timeOfDay === 'noite'
-                  ? '🌙 Noite'
-                  : '🌘 Madrugada'}
               </span>
               {hud.isInsideBuilding && (
                 <>
                   <span aria-hidden="true" className="text-[#4a3e35]">|</span>
-                  <span className="text-[11px] font-semibold text-[#60a5fa]">
+                  <span className="font-semibold text-[#60a5fa]">
                     🏢 {hud.currentBuildingName}
                   </span>
                 </>
               )}
               <span aria-hidden="true" className="text-[#4a3e35]">|</span>
               <span className="font-bold uppercase tracking-wider text-[#52b788]">
-                Extração: {hud.distToExtractionMeters}m
+                Abrigo: {hud.distToExtractionMeters}m
               </span>
             </div>
-            <div className="text-[11px] text-[#b8afa4] bg-[#0d0b09]/85 px-2.5 py-0.5 rounded-sm border border-[#211c18]">
+            <div className="text-[10px] text-[#b8afa4] bg-[#0d0b09]/80 px-2.5 py-0.5 rounded-sm border border-[#211c18] truncate max-w-sm">
               {hud.banner}
             </div>
           </div>
 
-          {/* Top-Right Cluster: Backpack Loot & Controls */}
-          <div className="pointer-events-auto flex flex-col items-end gap-1.5">
+          {/* Top-Right Cluster: Backpack Capacity, Loot Counters & Audio/Pause */}
+          <div className="pointer-events-auto flex flex-col items-end gap-1">
             <div className="flex items-start gap-1.5">
               <div
-                className="rounded-sm bg-[#110f0d]/92 border border-[#2e2722] px-2.5 py-1.5 shadow-xl"
+                className={`rounded-sm bg-[#110f0d]/85 border px-2 py-1.5 shadow-lg ${
+                  hud.isBackpackFull ? 'border-[#c94a38]' : 'border-[#2e2722]'
+                }`}
                 aria-label="Saque coletado na incursão"
               >
-                <div className="text-[9px] font-bold uppercase tracking-widest text-[#8c8277] mb-1 whitespace-nowrap">
-                  Mochila · {hud.distToExtractionMeters}m
+                <div className="flex items-center justify-between gap-2 text-[9px] font-bold uppercase tracking-wider mb-1 whitespace-nowrap">
+                  <span className={hud.isBackpackFull ? 'text-[#ef4444]' : 'text-[#8c8277]'}>
+                    Mochila {hud.lootTotal}/{hud.maxCarryCapacity}
+                    {hud.isBackpackFull ? ' (CHEIA)' : ''}
+                  </span>
+                  <span className="text-[#52b788] font-mono-tabular">
+                    {hud.distToExtractionMeters}m
+                  </span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1">
+                <div className="grid grid-cols-4 gap-x-2.5 gap-y-0.5">
                   <div className="flex items-center gap-1">
-                    <ResourceIconSvg type="comida" className="w-3.5 h-3.5 shrink-0" />
-                    <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
+                    <ResourceIconSvg type="comida" className="w-3 h-3 shrink-0" />
+                    <span className="font-mono-tabular text-[11px] font-bold text-[#ebe5dc]">
                       {hud.lootComida}
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <ResourceIconSvg type="medicamentos" className="w-3.5 h-3.5 shrink-0" />
-                    <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
+                    <ResourceIconSvg type="medicamentos" className="w-3 h-3 shrink-0" />
+                    <span className="font-mono-tabular text-[11px] font-bold text-[#ebe5dc]">
                       {hud.lootMedicamentos}
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <ResourceIconSvg type="municao" className="w-3.5 h-3.5 shrink-0" />
-                    <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
+                    <ResourceIconSvg type="municao" className="w-3 h-3 shrink-0" />
+                    <span className="font-mono-tabular text-[11px] font-bold text-[#ebe5dc]">
                       {hud.lootMunicao}
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <ResourceIconSvg type="materiais" className="w-3.5 h-3.5 shrink-0" />
-                    <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
+                    <ResourceIconSvg type="materiais" className="w-3 h-3 shrink-0" />
+                    <span className="font-mono-tabular text-[11px] font-bold text-[#ebe5dc]">
                       {hud.lootMateriais}
                     </span>
                   </div>
@@ -481,16 +590,16 @@ export function PhaserArena({
                     e.currentTarget.blur();
                     onToggleMute();
                   }}
-                  className="w-9 h-9 rounded-sm bg-[#110f0d]/92 border border-[#2e2722] hover:border-[#c87a28] flex items-center justify-center text-[#d6cec2]"
+                  className="w-8 h-8 rounded-sm bg-[#110f0d]/85 border border-[#2e2722] hover:border-[#c87a28] flex items-center justify-center text-[#d6cec2]"
                 >
                   {isMuted ? (
-                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M11 5L6 9H2v6h4l5 4V5z" />
                       <line x1="23" y1="9" x2="17" y2="15" />
                       <line x1="17" y1="9" x2="23" y2="15" />
                     </svg>
                   ) : (
-                    <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M11 5L6 9H2v6h4l5 4V5z" />
                       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
                     </svg>
@@ -505,9 +614,9 @@ export function PhaserArena({
                     e.currentTarget.blur();
                     onTogglePause();
                   }}
-                  className="w-9 h-9 rounded-sm bg-[#110f0d]/92 border border-[#2e2722] hover:border-[#c87a28] flex items-center justify-center text-[#d6cec2]"
+                  className="w-8 h-8 rounded-sm bg-[#110f0d]/85 border border-[#2e2722] hover:border-[#c87a28] flex items-center justify-center text-[#d6cec2]"
                 >
-                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.2">
                     <rect x="6" y="4" width="4" height="16" rx="0.5" />
                     <rect x="14" y="4" width="4" height="16" rx="0.5" />
                   </svg>
@@ -517,184 +626,193 @@ export function PhaserArena({
           </div>
         </div>
 
-        {/* BOTTOM PERIMETER TOUCH & TACTICAL ACTION CONTROLS */}
+        {/* BOTTOM PERIMETER: Contextual Object Interaction & Right-Thumb Tactical Cluster */}
         <div className="flex flex-col gap-1.5 pb-0.5 mt-auto">
-          {/* Contextual Interaction Banner anchored above the bottom bar (keeps center playfield clear) */}
-          {hud.promptLabel && (
+          {/* Contextual Interaction Prompt when standing next to a furniture/vehicle compartment or extraction */}
+          {(hud.promptActionVerb || hud.isSearchingLoot) && (
             <div className="pointer-events-auto self-center">
               <button
                 type="button"
+                data-testid="contextual-interact-prompt"
                 onClick={(e) => {
                   e.currentTarget.blur();
                   bridgeRef.current.queuedInteract = true;
                 }}
-                className={`min-h-[38px] px-3.5 py-1.5 rounded-sm font-display text-xs font-bold uppercase tracking-widest shadow-xl border transition-transform active:scale-95 ${
+                className={`min-h-[38px] px-3.5 py-1.5 rounded-sm font-display text-xs font-bold uppercase tracking-wider shadow-xl border transition-transform active:scale-95 flex items-center gap-2 ${
                   hud.promptType === 'extraction'
                     ? 'bg-[#132a1f]/95 border-[#52b788] text-[#ebe5dc]'
-                    : 'bg-[#1c1612]/95 border-[#c87a28] text-[#ebe5dc]'
+                    : hud.isBackpackFull
+                    ? 'bg-[#2b1412]/95 border-[#ef4444] text-[#fca5a5]'
+                    : 'bg-[#1c1612]/95 border-[#e09132] text-[#fef3c7]'
                 }`}
               >
-                [E] {hud.promptLabel}
+                {hud.isSearchingLoot ? (
+                  <span>Vasculhando... {hud.lootSearchProgress}%</span>
+                ) : hud.isBackpackFull && hud.promptType === 'loot' ? (
+                  <span>Mochila Cheia ({hud.promptLabel})</span>
+                ) : (
+                  <span>
+                    {hud.promptActionVerb} <span className="hidden sm:inline opacity-75">[E]</span>
+                  </span>
+                )}
               </button>
             </div>
           )}
 
-          {/* Discreet Utilitarian Tactical Action Strip */}
-          <div className="pointer-events-auto flex items-center justify-end gap-1.5 w-full sm:w-auto sm:self-end">
-            {/* Flashlight Toggle & Battery Readout */}
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={(e) => {
-                e.currentTarget.blur();
-                bridgeRef.current.queuedToggleFlashlight = true;
-              }}
-              className={`min-h-[42px] px-3 py-1 rounded-sm text-[11px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap flex items-center gap-1.5 ${
-                hud.flashlightEnabled
-                  ? 'bg-[#2b2416]/95 border-[#f59e0b] text-[#fef3c7] shadow-lg shadow-amber-950/40'
-                  : 'bg-[#12100e]/85 border-[#2e2722] text-[#8c8277]'
-              }`}
-            >
-              <span>🔦 Lanterna</span>
-              <span className={`font-mono text-[10px] ${hud.flashlightBattery < 20 ? 'text-[#ef4444] animate-pulse' : 'text-[#f59e0b]'}`}>
-                {hud.flashlightBattery}%
-              </span>
-              <span className="hidden sm:inline text-[9px] text-[#7a7066]">[F]</span>
-            </button>
-
-            <button
-              type="button"
-              tabIndex={-1}
-              onClick={(e) => {
-                e.currentTarget.blur();
-                bridgeRef.current.queuedInteract = true;
-              }}
-              className={`min-h-[42px] px-3 py-1 rounded-sm text-[11px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap ${
-                hud.promptLabel
-                  ? 'bg-[#193326]/90 border-[#52b788] text-[#ebe5dc]'
-                  : 'bg-[#12100e]/82 border-[#2e2722] text-[#9e9185]'
-              }`}
-            >
-              {hud.promptType === 'extraction' ? 'Extrair' : 'Saquear'}
-              <span className="hidden sm:inline"> [E]</span>
-            </button>
-
-            {/* Medical Bandaging / Field Healing */}
-            <button
-              type="button"
-              tabIndex={-1}
-              disabled={hud.lootMedicamentos <= 0 || (hud.hp >= hud.maxHp && !hud.isHealing)}
-              onClick={(e) => {
-                e.currentTarget.blur();
-                bridgeRef.current.queuedHeal = true;
-              }}
-              className={`min-h-[42px] px-3 py-1 rounded-sm border text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors flex items-center gap-1.5 ${
-                hud.isHealing
-                  ? 'bg-[#132a1f]/95 border-[#10b981] text-[#10b981] animate-pulse'
-                  : 'bg-[#1c1210]/85 hover:bg-[#291815] disabled:opacity-40 border-[#54221c] text-[#ebe5dc]'
-              }`}
-            >
-              {hud.isHealing ? (
-                <span>🩹 Curando ({Math.round((hud.healingProgress / hud.healingDuration) * 100)}%)...</span>
-              ) : (
-                <>
-                  <span>🩹 Curar ({hud.lootMedicamentos})</span>
-                  <span className="hidden sm:inline text-[9px] text-[#7a7066]">[H]</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Dual Thumbsticks Row: Left side has floating touch zone; Right side has Directional Aim & Fire button */}
+          {/* Bottom Row: Left Touch Hint & Right Tactical Action Cluster */}
           <div className="flex items-end justify-between gap-2">
-            {/* Left movement guidance text hint (minimal, non-intrusive) */}
-            <div className="pointer-events-none select-none pl-2 pb-2 text-[10px] text-[#7a7066]/70 uppercase tracking-widest font-mono">
-              Toque e arraste para mover
+            {/* Left subtle movement hint */}
+            <div className="pointer-events-none select-none pl-1.5 pb-1 text-[9px] text-[#7a7066]/65 uppercase tracking-widest font-mono">
+              Arraste à esq. para mover
             </div>
 
-            {/* Bottom-Right: Combined Directional Aim & Fire Stick */}
-            <div className="pointer-events-auto flex flex-col items-center gap-0.5">
-              <div
-                ref={rightStickRef}
-                role="button"
-                tabIndex={-1}
-                aria-label="Controle de Mira, Disparo e Recarga"
-                onPointerDown={(e) => {
-                  e.currentTarget.setPointerCapture(e.pointerId);
-                  rightPointerIdRef.current = e.pointerId;
-                  bridgeRef.current.queuedAttack = true;
-                  updateRightStick(e.clientX, e.clientY);
-                }}
-                onPointerMove={(e) => {
-                  if (rightPointerIdRef.current === e.pointerId) {
-                    updateRightStick(e.clientX, e.clientY);
-                  }
-                }}
-                onPointerUp={(e) => {
-                  if (rightPointerIdRef.current === e.pointerId) {
-                    resetRightStick();
-                  }
-                }}
-                onPointerCancel={(e) => {
-                  if (rightPointerIdRef.current === e.pointerId) {
-                    resetRightStick();
-                  }
-                }}
-                className="w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#171110]/60 border border-[#54221c] flex items-center justify-center touch-none relative"
-              >
-                <div className="w-full h-[1px] bg-[#3d1c18]/60 absolute pointer-events-none" />
-                <div className="h-full w-[1px] bg-[#3d1c18]/60 absolute pointer-events-none" />
-                <div
-                  ref={rightKnobRef}
-                  className="w-10 h-10 rounded-full bg-[#6e1d16]/90 border border-[#c94a38] shadow-md pointer-events-none flex items-center justify-center text-[9px] font-bold uppercase tracking-wider text-[#ebe5dc]"
+            {/* Right-Hand Ergonomic Tactical Cluster (Action Buttons + Aim/Attack Stick) */}
+            <div className="pointer-events-auto flex items-end gap-2">
+              {/* Compact Action Buttons Column/Strip next to Aim Stick */}
+              <div className="flex flex-col sm:flex-row items-end gap-1.5 pb-1">
+                {/* Flashlight Toggle Button (ON / OFF reliable toggle) */}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-flashlight-toggle"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    bridgeRef.current.queuedToggleFlashlight = true;
+                  }}
+                  className={`min-h-[40px] px-2.5 py-1 rounded-sm text-[10px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                    hud.flashlightEnabled && hud.flashlightBattery > 0
+                      ? 'bg-[#2b2416]/95 border-[#f59e0b] text-[#fef3c7] shadow-md'
+                      : 'bg-[#12100e]/85 border-[#2e2722] text-[#8c8277]'
+                  }`}
                 >
-                  Atirar
-                </div>
+                  <span>🔦 {hud.flashlightEnabled && hud.flashlightBattery > 0 ? 'ON' : 'OFF'}</span>
+                  <span
+                    className={`font-mono text-[10px] ${
+                      hud.flashlightBattery < 20 ? 'text-[#ef4444]' : 'text-[#f59e0b]'
+                    }`}
+                  >
+                    {hud.flashlightBattery}%
+                  </span>
+                  <span className="hidden sm:inline text-[9px] text-[#7a7066]">[F]</span>
+                </button>
+
+                {/* Contextual Search / Extract Button */}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-interact-btn"
+                  disabled={!hud.promptLabel && !hud.isSearchingLoot}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    bridgeRef.current.queuedInteract = true;
+                  }}
+                  className={`min-h-[40px] px-2.5 py-1 rounded-sm text-[10px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap ${
+                    hud.promptLabel || hud.isSearchingLoot
+                      ? hud.promptType === 'extraction'
+                        ? 'bg-[#193326]/95 border-[#52b788] text-[#ebe5dc]'
+                        : 'bg-[#261d14]/95 border-[#e09132] text-[#fef3c7]'
+                      : 'bg-[#12100e]/65 border-[#241f1b] text-[#6e655c] opacity-60'
+                  }`}
+                >
+                  {hud.promptType === 'extraction'
+                    ? '🚪 Extrair'
+                    : hud.isSearchingLoot
+                    ? `🔍 ${hud.lootSearchProgress}%`
+                    : '🔍 Vasculhar'}
+                  <span className="hidden sm:inline text-[9px] opacity-75"> [E]</span>
+                </button>
+
+                {/* Medical Bandaging Button */}
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-heal-btn"
+                  disabled={hud.lootMedicamentos <= 0 || (hud.hp >= hud.maxHp && !hud.isHealing)}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    bridgeRef.current.queuedHeal = true;
+                  }}
+                  className={`min-h-[40px] px-2.5 py-1 rounded-sm border text-[10px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors flex items-center gap-1 ${
+                    hud.isHealing
+                      ? 'bg-[#132a1f]/95 border-[#10b981] text-[#10b981]'
+                      : 'bg-[#1c1210]/85 hover:bg-[#291815] disabled:opacity-45 border-[#54221c] text-[#ebe5dc]'
+                  }`}
+                >
+                  {hud.isHealing ? (
+                    <span>🩹 {Math.round((hud.healingProgress / hud.healingDuration) * 100)}%</span>
+                  ) : (
+                    <>
+                      <span>🩹 Curar ({hud.lootMedicamentos})</span>
+                      <span className="hidden sm:inline text-[9px] text-[#7a7066]">[H]</span>
+                    </>
+                  )}
+                </button>
               </div>
-              <span className="text-[9px] text-[#9e473c] font-bold uppercase tracking-widest">
-                Disparo / Recarga
-              </span>
+
+              {/* Combined Directional Aim & Attack Pad (Adapts label to Pistol or Machete) */}
+              <div className="flex flex-col items-center gap-0.5">
+                <div
+                  ref={rightStickRef}
+                  role="button"
+                  tabIndex={-1}
+                  data-testid="hud-aim-attack-stick"
+                  aria-label="Controle de Mira, Ataque e Recarga"
+                  onPointerDown={(e) => {
+                    try {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    } catch {
+                      // Ignore synthetic events without active pointerId
+                    }
+                    rightPointerIdRef.current = e.pointerId;
+                    bridgeRef.current.queuedAttack = true;
+                    updateRightStick(e.clientX, e.clientY);
+                  }}
+                  onPointerMove={(e) => {
+                    if (rightPointerIdRef.current === e.pointerId) {
+                      updateRightStick(e.clientX, e.clientY);
+                    }
+                  }}
+                  onPointerUp={(e) => {
+                    if (rightPointerIdRef.current === e.pointerId) {
+                      resetRightStick();
+                    }
+                  }}
+                  onPointerCancel={(e) => {
+                    if (rightPointerIdRef.current === e.pointerId) {
+                      resetRightStick();
+                    }
+                  }}
+                  onLostPointerCapture={(e) => {
+                    if (rightPointerIdRef.current === e.pointerId) {
+                      resetRightStick();
+                    }
+                  }}
+                  className={`w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#171110]/65 border flex items-center justify-center touch-none relative ${
+                    hud.weapon === 'facao' ? 'border-[#d9822b]/80' : 'border-[#54221c]'
+                  }`}
+                >
+                  <div className="w-full h-[1px] bg-[#3d1c18]/55 absolute pointer-events-none" />
+                  <div className="h-full w-[1px] bg-[#3d1c18]/55 absolute pointer-events-none" />
+                  <div
+                    ref={rightKnobRef}
+                    className={`w-11 h-11 rounded-full shadow-md pointer-events-none flex items-center justify-center text-[9px] font-bold uppercase tracking-wider text-[#ebe5dc] border ${
+                      hud.weapon === 'facao'
+                        ? 'bg-[#6b3c14]/90 border-[#e09132]'
+                        : 'bg-[#6e1d16]/90 border-[#c94a38]'
+                    }`}
+                  >
+                    {hud.weapon === 'facao' ? 'Golpear' : 'Atirar'}
+                  </div>
+                </div>
+                <span className="text-[9px] text-[#b8afa4]/80 font-bold uppercase tracking-wider">
+                  {hud.weapon === 'facao' ? 'Cone / Golpe' : 'Mira / Recarga'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-
-      {/* FLOATING JOYSTICK TOUCH SURFACE (Covers the left 50% of the screen) */}
-      <div
-        data-testid="floating-joystick-touchzone"
-        onPointerDown={onLeftZonePointerDown}
-        onPointerMove={onLeftZonePointerMove}
-        onPointerUp={onLeftZonePointerUp}
-        onPointerCancel={onLeftZonePointerUp}
-        className="fixed inset-y-0 left-0 w-1/2 z-20 touch-none"
-        style={{ pointerEvents: floatingJoy.visible ? 'auto' : 'auto' }}
-      >
-        {/* Floating Joystick Base and Knob (Only visible when touching) */}
-        {floatingJoy.visible && (
-          <div
-            style={{
-              left: floatingJoy.startX,
-              top: floatingJoy.startY,
-              transform: 'translate(-50%, -50%)',
-            }}
-            className="pointer-events-none absolute w-28 h-28 rounded-full bg-[#110f0d]/65 border border-[#c87a28]/60 flex items-center justify-center shadow-2xl"
-          >
-            {/* Crosshairs */}
-            <div className="w-full h-[1px] bg-[#c87a28]/35 absolute" />
-            <div className="h-full w-[1px] bg-[#c87a28]/35 absolute" />
-
-            {/* Floating Knob */}
-            <div
-              style={{
-                transform: `translate3d(${floatingJoy.knobX.toFixed(1)}px, ${floatingJoy.knobY.toFixed(1)}px, 0)`,
-              }}
-              className="w-11 h-11 rounded-full bg-[#2b241d]/95 border border-[#e09132] shadow-lg flex items-center justify-center"
-            >
-              <div className="w-2.5 h-2.5 rounded-full bg-[#e09132]" />
-            </div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }
+

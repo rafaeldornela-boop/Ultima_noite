@@ -12,6 +12,8 @@ import {
   stepWorld,
   triggerInteract,
   useFieldMedkit,
+  WEAPON_CONFIG,
+  ZOMBIE_ARCHETYPE_CONFIG,
 } from '../src/action/actionRules.ts';
 import {
   loadActionStash,
@@ -325,5 +327,120 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(z.alertState).toBe('hunting');
     expect(z.vx).toBeGreaterThan(0);
   });
+
+  it('12. Zumbis comuns têm velocidade reduzida (~60%) e todos os distritos usam zumbis comuns por padrão', () => {
+    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.speed).toBeGreaterThanOrEqual(34);
+    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.speed).toBeLessThanOrEqual(41);
+
+    for (const distId of ['vila_esperanca', 'centro_comercial', 'complexo_medico'] as const) {
+      const w = createInitialWorldState(`spec_z_${distId}`, distId);
+      expect(w.zombies.length).toBeGreaterThan(0);
+      expect(w.zombies.every((z) => z.archetype === 'lento')).toBe(true);
+      expect(w.zombies.every((z) => z.speed === ZOMBIE_ARCHETYPE_CONFIG.lento.speed)).toBe(true);
+    }
+  });
+
+  it('13. Cone direcional do facão atinge inimigos na área, ignora fora do cone ou atrás de parede e emite menos ruído', () => {
+    const world = createInitialWorldState('spec_machete_cone');
+    world.player.x = 500;
+    world.player.y = 500;
+    world.player.facingAngle = 0; // Leste
+    world.player.equippedWeapon = 'facao';
+
+    const zFront = createZombieFromArchetype('z_front', 'lento', 555, 505); // Dentro do cone e alcance (86px)
+    const zBehind = createZombieFromArchetype('z_behind', 'lento', 445, 500); // Atrás do jogador
+    const zFar = createZombieFromArchetype('z_far', 'lento', 630, 500); // Fora do alcance
+    world.zombies = [zFront, zBehind, zFar];
+    world.obstacles = []; // Sem paredes inicialmente
+
+    const res = performAttack(world);
+    expect(res.type).toBe('melee');
+    expect(res.hits).toBe(1);
+    expect(zFront.hp).toBe(zFront.maxHp - WEAPON_CONFIG.facao.damage);
+    expect(zBehind.hp).toBe(zBehind.maxHp);
+    expect(zFar.hp).toBe(zFar.maxHp);
+    expect(world.noiseEvents[world.noiseEvents.length - 1].radius).toBeLessThan(
+      WEAPON_CONFIG.pistola.noiseRadius
+    );
+
+    // Adiciona uma parede sólida entre o jogador e zFront
+    world.player.attackCooldown = 0;
+    world.obstacles = [
+      { id: 'wall_block', x: 525, y: 470, width: 12, height: 60, kind: 'wall' },
+    ];
+    const hpBeforeBlocked = zFront.hp;
+    const blockedRes = performAttack(world);
+    expect(blockedRes.hits).toBe(0);
+    expect(zFront.hp).toBe(hpBeforeBlocked);
+  });
+
+  it('14. Saque contextual em objetos do cenário respeita parede e preserva itens quando a mochila está cheia', () => {
+    const world = createInitialWorldState('spec_contextual_loot');
+    // Todos os pontos de saque devem ser móveis ou compartimentos reais do cenário
+    const validContainers = new Set([
+      'armario',
+      'gaveta',
+      'geladeira',
+      'gondola',
+      'porta_malas',
+      'porta_luvas',
+      'cofre',
+      'maca',
+      'bancada',
+    ]);
+    expect(world.lootSpots.every((s) => validContainers.has(s.containerType))).toBe(true);
+    expect(world.lootSpots.every((s) => typeof s.actionVerb === 'string' && s.actionVerb.length > 0)).toBe(true);
+
+    const spot = world.lootSpots[0];
+    world.player.x = spot.x;
+    world.player.y = spot.y;
+
+    // Enche a mochila no limite máximo
+    world.maxCarryCapacity = 10;
+    world.runLoot = { comida: 5, medicamentos: 2, municao: 0, materiais: 3 };
+
+    const fullRes = triggerInteract(world);
+    expect(fullRes.interacted).toBe(false);
+    expect(spot.looted).toBe(false);
+    expect(spot.searchState).toBe('available');
+    expect(world.lastEventBanner).toContain('Mochila cheia');
+
+    // Libera espaço na mochila e realiza o saque
+    world.runLoot.comida = 0;
+    const okRes = triggerInteract(world);
+    expect(okRes.interacted).toBe(true);
+    expect(okRes.action).toBe('looted');
+    expect(spot.looted).toBe(true);
+    expect(spot.searchState).toBe('searched');
+  });
+
+  it('15. Parada imediata ao soltar o joystick e alternância confiável da lanterna ON/OFF', () => {
+    const world = createInitialWorldState('spec_joy_stop_flashlight');
+    const moveInput = createDefaultInputState();
+    moveInput.moveX = 1;
+    moveInput.moveY = 0.5;
+
+    stepWorld(world, moveInput, 0.05);
+    expect(Math.hypot(world.player.vx, world.player.vy)).toBeGreaterThan(0);
+
+    // Ao soltar o toque (input neutro), a velocidade zera imediatamente
+    const releaseInput = createDefaultInputState();
+    stepWorld(world, releaseInput, 0.05);
+    expect(world.player.vx).toBe(0);
+    expect(world.player.vy).toBe(0);
+
+    // Alternância ON -> OFF -> ON da lanterna
+    expect(world.player.flashlight.enabled).toBe(true);
+    const toggleOff = createDefaultInputState();
+    toggleOff.toggleFlashlightJustPressed = true;
+    stepWorld(world, toggleOff, 0.05);
+    expect(world.player.flashlight.enabled).toBe(false);
+
+    const toggleOn = createDefaultInputState();
+    toggleOn.toggleFlashlightJustPressed = true;
+    stepWorld(world, toggleOn, 0.05);
+    expect(world.player.flashlight.enabled).toBe(true);
+  });
 });
+
 

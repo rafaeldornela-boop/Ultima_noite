@@ -52,6 +52,89 @@ export function createInitialPersistentStash(): PersistentShelterStash {
   };
 }
 
+export interface ZombieArchetypeStats {
+  name: string;
+  radius: number;
+  visionConeAngle: number;
+  visionRange: number;
+  hp: number;
+  speed: number;
+  damage: number;
+  detectionRange: number;
+  attackRange: number;
+  windupDuration: number;
+  attackCooldown: number;
+}
+
+export const ZOMBIE_ARCHETYPE_CONFIG: Record<ZombieArchetype, ZombieArchetypeStats> = {
+  // Common zombie speed reduced to ~60% of original (37 px/s vs 62 px/s) for fair tactical pacing
+  lento: {
+    name: 'Errante Comum',
+    radius: 16,
+    visionConeAngle: 1.35, // ~77 degrees
+    visionRange: 230,
+    hp: 45,
+    speed: 37,
+    damage: 14,
+    detectionRange: 420,
+    attackRange: 34,
+    windupDuration: 0.34,
+    attackCooldown: 1.2,
+  },
+  // Future-ready architecture for specialized archetypes (kept proportional for tests)
+  corredor: {
+    name: 'Corredor Infectado',
+    radius: 14,
+    visionConeAngle: 1.5, // ~86 degrees
+    visionRange: 260,
+    hp: 30,
+    speed: 74,
+    damage: 10,
+    detectionRange: 460,
+    attackRange: 32,
+    windupDuration: 0.28,
+    attackCooldown: 0.9,
+  },
+  bruto: {
+    name: 'Bruto Blindado',
+    radius: 22,
+    visionConeAngle: 1.2, // ~68 degrees
+    visionRange: 210,
+    hp: 120,
+    speed: 26,
+    damage: 26,
+    detectionRange: 400,
+    attackRange: 42,
+    windupDuration: 0.45,
+    attackCooldown: 1.35,
+  },
+};
+
+export const WEAPON_CONFIG = {
+  pistola: {
+    damage: 24,
+    cooldown: 0.22,
+    bulletSpeed: 680,
+    sightRange: 260,
+    noiseRadius: 480,
+  },
+  facao: {
+    reach: 86, // 70..100 px world range
+    coneAngleRad: (65 * Math.PI) / 180, // 65 deg total opening (within 55..75 deg)
+    damage: 30,
+    cooldown: 0.44, // Distinct recovery interval between swings
+    swingDuration: 0.22,
+    knockback: 220,
+    noiseRadius: 0, // Silent melee weapon
+  },
+} as const;
+
+export const DEFAULT_MAX_CARRY_CAPACITY = 24;
+
+export function getCarryLoad(bag: ActionLootBag): number {
+  return (bag.comida || 0) + (bag.medicamentos || 0) + (bag.materiais || 0);
+}
+
 export function createZombieFromArchetype(
   id: string,
   archetype: ZombieArchetype,
@@ -59,95 +142,28 @@ export function createZombieFromArchetype(
   y: number,
   index = 0
 ): ZombieEntity {
-  if (archetype === 'corredor') {
-    return {
-      id,
-      archetype: 'corredor',
-      name: 'Corredor Infectado',
-      x,
-      y,
-      vx: 0,
-      vy: 0,
-      radius: 14,
-      facingAngle: 0,
-      visionConeAngle: 1.5, // ~86 degrees
-      visionRange: 270,
-      alertState: 'idle',
-      alertTimer: 0,
-      targetPoint: null,
-      hp: 30,
-      maxHp: 30,
-      speed: 128,
-      damage: 10,
-      detectionRange: 480,
-      attackRange: 34,
-      attackCooldown: 0,
-      windupTimer: 0,
-      isWindingUp: false,
-      hitFlashTimer: 0,
-      knockbackVx: 0,
-      knockbackVy: 0,
-      dead: false,
-      deathTimer: 0,
-      flankSign: index % 2 === 0 ? 1 : -1,
-    };
-  }
-
-  if (archetype === 'bruto') {
-    return {
-      id,
-      archetype: 'bruto',
-      name: 'Bruto Blindado',
-      x,
-      y,
-      vx: 0,
-      vy: 0,
-      radius: 22,
-      facingAngle: 0,
-      visionConeAngle: 1.2, // ~68 degrees
-      visionRange: 220,
-      alertState: 'idle',
-      alertTimer: 0,
-      targetPoint: null,
-      hp: 120,
-      maxHp: 120,
-      speed: 45,
-      damage: 26,
-      detectionRange: 420,
-      attackRange: 44,
-      attackCooldown: 0,
-      windupTimer: 0,
-      isWindingUp: false,
-      hitFlashTimer: 0,
-      knockbackVx: 0,
-      knockbackVy: 0,
-      dead: false,
-      deathTimer: 0,
-      flankSign: 1,
-    };
-  }
-
+  const cfg = ZOMBIE_ARCHETYPE_CONFIG[archetype] ?? ZOMBIE_ARCHETYPE_CONFIG.lento;
   return {
     id,
-    archetype: 'lento',
-    name: 'Errante Lento',
+    archetype,
+    name: cfg.name,
     x,
     y,
     vx: 0,
     vy: 0,
-    radius: 16,
+    radius: cfg.radius,
     facingAngle: 0,
-    visionConeAngle: 1.35, // ~77 degrees
-    visionRange: 240,
+    visionConeAngle: cfg.visionConeAngle,
+    visionRange: cfg.visionRange,
     alertState: 'idle',
     alertTimer: 0,
     targetPoint: null,
-    hp: 45,
-    maxHp: 45,
-    speed: 62,
-    damage: 14,
-    detectionRange: 430,
-    attackRange: 36,
+    hp: cfg.hp,
+    maxHp: cfg.hp,
+    speed: cfg.speed,
+    damage: cfg.damage,
+    detectionRange: cfg.detectionRange,
+    attackRange: cfg.attackRange,
     attackCooldown: 0,
     windupTimer: 0,
     isWindingUp: false,
@@ -156,7 +172,7 @@ export function createZombieFromArchetype(
     knockbackVy: 0,
     dead: false,
     deathTimer: 0,
-    flankSign: 1,
+    flankSign: index % 2 === 0 ? 1 : -1,
   };
 }
 
@@ -172,7 +188,14 @@ export function createInitialWorldState(
     districtName: def.name,
     timeOfDay: def.initialTimeOfDay,
     dayNightClock: 0,
-    ambientDarkness: def.initialTimeOfDay === 'noite' ? 0.78 : def.initialTimeOfDay === 'madrugada' ? 0.65 : def.initialTimeOfDay === 'entardecer' ? 0.45 : 0.18,
+    ambientDarkness:
+      def.initialTimeOfDay === 'noite'
+        ? 0.42
+        : def.initialTimeOfDay === 'madrugada'
+        ? 0.34
+        : def.initialTimeOfDay === 'entardecer'
+        ? 0.24
+        : 0.10,
     isInsideBuilding: false,
     currentBuildingName: null,
     status: 'playing',
@@ -211,7 +234,7 @@ export function createInitialWorldState(
         maxBattery: 100,
         drainRate: 1.15, // lasts ~85s of continuous light
         range: 320,
-        coneAngle: 0.95,
+        coneAngle: 0.98,
       },
       healing: null,
       isInsideBuilding: null,
@@ -223,6 +246,7 @@ export function createInitialWorldState(
     bullets: [],
     lootSpots: def.lootSpots.map((l) => ({
       ...l,
+      searchState: l.looted ? 'searched' : 'available',
       contents: { ...l.contents },
     })),
     obstacles: def.obstacles.map((o) => ({ ...o })),
@@ -234,10 +258,11 @@ export function createInitialWorldState(
       municao: 0,
       materiais: 0,
     },
+    maxCarryCapacity: DEFAULT_MAX_CARRY_CAPACITY,
     zombiesKilled: 0,
     shotsFired: 0,
     activePrompt: null,
-    lastEventBanner: `${def.name}: Explore o setor, vasculhe os móveis e extraia com vida.`,
+    lastEventBanner: `${def.name}: Explore o setor, vasculhe os objetos e extraia com vida.`,
     feedbacks: [],
     extractionProcessed: false,
     activeLooting: null,
@@ -460,6 +485,118 @@ export function pointHitsObstacle(
   return false;
 }
 
+export function segmentIntersectsRect(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  rect: ObstacleRect
+): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  const p = [-dx, dx, -dy, dy];
+  const q = [
+    x1 - rect.x,
+    rect.x + rect.width - x1,
+    y1 - rect.y,
+    rect.y + rect.height - y1,
+  ];
+
+  for (let i = 0; i < 4; i++) {
+    if (Math.abs(p[i]) < 1e-8) {
+      if (q[i] < 0) return false;
+    } else {
+      const t = q[i] / p[i];
+      if (p[i] < 0) {
+        if (t > t1) return false;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return false;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+
+  return t0 <= t1 && t1 >= 0 && t0 <= 1;
+}
+
+export function isSegmentBlockedByWall(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  obstacles: ObstacleRect[]
+): boolean {
+  for (const obs of obstacles) {
+    if (obs.kind !== 'wall') continue;
+    if (segmentIntersectsRect(x1, y1, x2, y2, obs)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function getRayObstacleDistance(
+  ox: number,
+  oy: number,
+  angle: number,
+  maxDist: number,
+  obstacles: ObstacleRect[],
+  wallsOnly = true
+): number {
+  const dx = Math.cos(angle);
+  const dy = Math.sin(angle);
+  let bestDist = maxDist;
+
+  for (const obs of obstacles) {
+    if (wallsOnly && obs.kind !== 'wall') continue;
+
+    let tMin = 0;
+    let tMax = bestDist;
+
+    if (Math.abs(dx) < 1e-8) {
+      if (ox < obs.x || ox > obs.x + obs.width) continue;
+    } else {
+      const invDx = 1 / dx;
+      let t1 = (obs.x - ox) * invDx;
+      let t2 = (obs.x + obs.width - ox) * invDx;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      tMin = Math.max(tMin, t1);
+      tMax = Math.min(tMax, t2);
+      if (tMin > tMax) continue;
+    }
+
+    if (Math.abs(dy) < 1e-8) {
+      if (oy < obs.y || oy > obs.y + obs.height) continue;
+    } else {
+      const invDy = 1 / dy;
+      let t1 = (obs.y - oy) * invDy;
+      let t2 = (obs.y + obs.height - oy) * invDy;
+      if (t1 > t2) {
+        const tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      tMin = Math.max(tMin, t1);
+      tMax = Math.min(tMax, t2);
+      if (tMin > tMax) continue;
+    }
+
+    if (tMin >= 0 && tMin < bestDist) {
+      bestDist = tMin;
+    }
+  }
+
+  return Math.max(8, bestDist);
+}
+
 function addFloatingFeedback(
   world: ActionWorldState,
   text: string,
@@ -485,7 +622,7 @@ export function startReload(world: ActionWorldState): boolean {
   if (p.reloadTimer > 0) return false;
   if (p.ammoInClip >= p.clipSize) return false;
   if (p.ammoReserve <= 0) {
-    world.lastEventBanner = 'Sem munição de reserva! Use o Facão [Espaço / Trocar] ou busque caixas.';
+    world.lastEventBanner = 'Sem munição de reserva! Troque para o Facão [Q] ou reviste objetos.';
     return false;
   }
 
@@ -532,10 +669,10 @@ export function performAttack(world: ActionWorldState): {
     }
 
     p.ammoInClip -= 1;
-    p.attackCooldown = 0.22;
+    p.attackCooldown = WEAPON_CONFIG.pistola.cooldown;
     world.shotsFired += 1;
 
-    const bulletSpeed = 680;
+    const bulletSpeed = WEAPON_CONFIG.pistola.bulletSpeed;
     const muzzleDist = p.radius + 8;
     const bx = p.x + Math.cos(p.facingAngle) * muzzleDist;
     const by = p.y + Math.sin(p.facingAngle) * muzzleDist;
@@ -547,7 +684,7 @@ export function performAttack(world: ActionWorldState): {
       vx: Math.cos(p.facingAngle) * bulletSpeed,
       vy: Math.sin(p.facingAngle) * bulletSpeed,
       radius: 4,
-      damage: 24,
+      damage: WEAPON_CONFIG.pistola.damage,
       lifeTimer: 0.95,
       active: true,
     };
@@ -556,7 +693,7 @@ export function performAttack(world: ActionWorldState): {
     world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.15);
 
     // Gunshot emits high-radius acoustic impulse (480px) attracting zombies
-    emitNoise(world, p.x, p.y, 480, 'gunshot');
+    emitNoise(world, p.x, p.y, WEAPON_CONFIG.pistola.noiseRadius, 'gunshot');
 
     // If clip became 0 after this shot, trigger reload immediately
     if (p.ammoInClip === 0 && p.ammoReserve > 0) {
@@ -574,41 +711,63 @@ export function performMeleeSwing(world: ActionWorldState): {
   hits: number;
 } {
   const p = world.player;
-  p.attackCooldown = 0.36;
-  p.meleeSwingTimer = 0.2;
+  const cfg = WEAPON_CONFIG.facao;
+  p.attackCooldown = cfg.cooldown;
+  p.meleeSwingTimer = cfg.swingDuration;
 
-  // Melee attack is much quieter than gunshot (80px radius)
-  emitNoise(world, p.x, p.y, 80, 'melee');
+  // Machete emits low-radius melee noise (95px vs pistol 480px)
+  emitNoise(world, p.x, p.y, cfg.noiseRadius, 'melee');
 
-  const meleeReach = 64;
-  const meleeDamage = 28;
-  let hits = 0;
+  const halfCone = cfg.coneAngleRad * 0.5;
+
+  let bestTarget: ZombieEntity | null = null;
+  let bestAngleToTarget = 0;
+  let bestScore = Infinity;
 
   for (const z of world.zombies) {
     if (z.dead) continue;
     const dx = z.x - p.x;
     const dy = z.y - p.y;
     const dist = Math.hypot(dx, dy);
-    if (dist > meleeReach + z.radius) continue;
 
-    // Check angle cone (~120 degrees in front, or any direction if overlapping closely)
+    // Target edge must be within the machete reach
+    const edgeDist = Math.max(0, dist - z.radius);
+    if (edgeDist > cfg.reach) continue;
+
     const angleToZombie = Math.atan2(dy, dx);
-    let angleDiff = Math.abs(
+    const angleDiff = Math.abs(
       ((angleToZombie - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
     );
-    if (dist <= p.radius + z.radius + 10) {
-      angleDiff = 0;
-    }
 
-    if (angleDiff <= Math.PI * 0.65) {
-      hits += 1;
-      damageZombie(world, z, meleeDamage, Math.cos(angleToZombie), Math.sin(angleToZombie), 220);
+    // Angular subtended allowance for the target's body radius
+    const bodyAngularAllowance = Math.atan2(z.radius * 0.75, Math.max(20, dist));
+    if (angleDiff > halfCone + bodyAngularAllowance) continue;
+
+    // Wall obstruction check: cannot slash through solid walls
+    if (isSegmentBlockedByWall(p.x, p.y, z.x, z.y, world.obstacles)) continue;
+
+    // Prioritize closest and best-aligned target within the valid cone
+    const score = edgeDist + angleDiff * 35;
+    if (score < bestScore) {
+      bestScore = score;
+      bestTarget = z;
+      bestAngleToTarget = angleToZombie;
     }
   }
 
-  if (hits > 0) {
+  let hits = 0;
+  if (bestTarget) {
+    hits = 1;
+    damageZombie(
+      world,
+      bestTarget,
+      cfg.damage,
+      Math.cos(bestAngleToTarget),
+      Math.sin(bestAngleToTarget),
+      cfg.knockback
+    );
     world.hitstopTimer = 0.04;
-    world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.25);
+    world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.22);
   }
 
   return { type: 'melee', hits };
@@ -662,8 +821,12 @@ export function applyDamageToPlayer(
     cancelHealing(world, 'Atingido! Aplicação de atadura cancelada!');
   }
   if (world.activeLooting) {
+    const activeSpot = world.lootSpots.find((s) => s.id === world.activeLooting?.spotId);
+    if (activeSpot && !activeSpot.looted) {
+      activeSpot.searchState = 'available';
+    }
     world.activeLooting = null;
-    addFloatingFeedback(world, 'Vasculhamento interrompido!', p.x, p.y - 32, '#ef4444');
+    addFloatingFeedback(world, 'Busca interrompida!', p.x, p.y - 32, '#ef4444');
   }
 
   addFloatingFeedback(world, `-${actualDamage} PV`, p.x, p.y - 24, '#ef4444');
@@ -700,10 +863,113 @@ export function useFieldMedkit(world: ActionWorldState): boolean {
   return true;
 }
 
+function getDefaultVerbForContainer(containerType: string): string {
+  switch (containerType) {
+    case 'porta_malas':
+      return 'Abrir porta-malas';
+    case 'porta_luvas':
+      return 'Vasculhar porta-luvas';
+    case 'armario':
+      return 'Buscar armário';
+    case 'gaveta':
+      return 'Revistar gaveta';
+    case 'geladeira':
+      return 'Abrir geladeira';
+    case 'gondola':
+      return 'Vasculhar prateleira';
+    case 'bancada':
+      return 'Verificar bancada';
+    case 'maca':
+      return 'Examinar maca';
+    case 'cofre':
+      return 'Destrancar cofre';
+    default:
+      return 'Vasculhar objeto';
+  }
+}
+
+export function collectFromLootSpot(
+  world: ActionWorldState,
+  spotId: string
+): { collected: boolean; full: boolean; summary: string } {
+  const spot = world.lootSpots.find((s) => s.id === spotId);
+  if (!spot || spot.looted) {
+    return { collected: false, full: false, summary: '' };
+  }
+
+  const maxCap = world.maxCarryCapacity ?? DEFAULT_MAX_CARRY_CAPACITY;
+  let remSlots = Math.max(0, maxCap - getCarryLoad(world.runLoot));
+
+  const parts: string[] = [];
+
+  // 1. Collect physical supplies up to remaining backpack capacity (never silently discard)
+  const takeSupply = (key: 'comida' | 'medicamentos' | 'materiais', label: string) => {
+    const avail = spot.contents[key] ?? 0;
+    if (avail <= 0) return;
+    const toTake = Math.min(avail, remSlots);
+    if (toTake > 0) {
+      world.runLoot[key] += toTake;
+      spot.contents[key] = avail - toTake;
+      remSlots -= toTake;
+      parts.push(`+${toTake} ${label}`);
+    }
+  };
+
+  takeSupply('comida', 'Comida');
+  takeSupply('medicamentos', 'Remédios');
+  takeSupply('materiais', 'Materiais');
+
+  // 2. Collect ammunition if there was room for at least part of the search or if only ammo is inside
+  const availAmmo = spot.contents.municao ?? 0;
+  const remainingSupplies =
+    (spot.contents.comida ?? 0) +
+    (spot.contents.medicamentos ?? 0) +
+    (spot.contents.materiais ?? 0);
+
+  if (availAmmo > 0 && (parts.length > 0 || remainingSupplies === 0)) {
+    world.runLoot.municao += availAmmo;
+    world.player.ammoReserve += availAmmo;
+    spot.contents.municao = 0;
+    parts.push(`+${availAmmo} Munição`);
+  }
+
+  const stillLeft =
+    (spot.contents.comida ?? 0) +
+    (spot.contents.medicamentos ?? 0) +
+    (spot.contents.materiais ?? 0) +
+    (spot.contents.municao ?? 0);
+
+  if (parts.length === 0 && stillLeft > 0) {
+    spot.looted = false;
+    spot.searchState = 'available';
+    const msg = 'Mochila cheia! Extraia no abrigo antes de coletar mais suprimentos.';
+    world.lastEventBanner = msg;
+    addFloatingFeedback(world, 'Mochila Cheia!', spot.x, spot.y - 18, '#f59e0b');
+    return { collected: false, full: true, summary: msg };
+  }
+
+  if (stillLeft > 0) {
+    // Partial collection: remaining items stay inside the object without silent loss
+    spot.looted = false;
+    spot.searchState = 'available';
+    const summary = `${spot.label}: ${parts.join(', ')} (Mochila cheia — restante preservado)`;
+    world.lastEventBanner = summary;
+    addFloatingFeedback(world, `${parts.join(' ')} (Mochila Cheia)`, spot.x, spot.y - 18, '#f59e0b');
+    return { collected: true, full: true, summary };
+  }
+
+  spot.looted = true;
+  spot.searchState = 'searched';
+  const summary = `${spot.label}: ${parts.join(', ')}`;
+  world.lastEventBanner = `Coletado — ${summary}`;
+  addFloatingFeedback(world, parts.join(' '), spot.x, spot.y - 18, '#10b981');
+  return { collected: true, full: false, summary };
+}
+
 export function findNearestInteractable(world: ActionWorldState): InteractPrompt | null {
   const p = world.player;
 
-  // 1. Check unlooted loot spots within interaction range
+  // 1. Check unlooted contextual objects within interaction range & not blocked by a wall
   let closestLoot: InteractPrompt | null = null;
   let minDist = Infinity;
 
@@ -711,11 +977,17 @@ export function findNearestInteractable(world: ActionWorldState): InteractPrompt
     if (spot.looted) continue;
     const dist = Math.hypot(spot.x - p.x, spot.y - p.y);
     if (dist <= spot.radius + p.radius + 26 && dist < minDist) {
+      if (isSegmentBlockedByWall(p.x, p.y, spot.x, spot.y, world.obstacles)) {
+        continue;
+      }
       minDist = dist;
+      const verb = spot.actionVerb ?? getDefaultVerbForContainer(spot.containerType);
       closestLoot = {
         targetType: 'loot',
         id: spot.id,
-        label: `Saquear: ${spot.label}`,
+        label: `${verb} — ${spot.label}`,
+        actionVerb: verb,
+        containerType: spot.containerType,
         x: spot.x,
         y: spot.y,
       };
@@ -732,6 +1004,7 @@ export function findNearestInteractable(world: ActionWorldState): InteractPrompt
       targetType: 'extraction',
       id: ext.id,
       label: 'Extrair no Portão do Abrigo (Concluir Incursão)',
+      actionVerb: 'Extrair no Abrigo',
       x: ext.x,
       y: ext.y,
     };
@@ -742,48 +1015,29 @@ export function findNearestInteractable(world: ActionWorldState): InteractPrompt
 
 export function triggerInteract(world: ActionWorldState): {
   interacted: boolean;
-  action?: 'looted' | 'extracted';
+  action?: 'looted' | 'extracted' | 'inventory_full';
   summary?: string;
 } {
   if (world.status !== 'playing') return { interacted: false };
 
   const prompt = findNearestInteractable(world);
   if (!prompt) {
-    world.lastEventBanner = 'Aproxime-se de uma caixa de suprimentos ou do Portão de Extração.';
+    world.lastEventBanner = 'Aproxime-se de um veículo, armário, gaveta ou do Portão de Extração.';
     return { interacted: false };
   }
 
   if (prompt.targetType === 'loot') {
-    const spot = world.lootSpots.find((s) => s.id === prompt.id);
-    if (!spot || spot.looted) return { interacted: false };
-
-    spot.looted = true;
-    const parts: string[] = [];
-
-    if (spot.contents.comida) {
-      world.runLoot.comida += spot.contents.comida;
-      parts.push(`+${spot.contents.comida} Comida`);
-    }
-    if (spot.contents.medicamentos) {
-      world.runLoot.medicamentos += spot.contents.medicamentos;
-      parts.push(`+${spot.contents.medicamentos} Remédios`);
-    }
-    if (spot.contents.materiais) {
-      world.runLoot.materiais += spot.contents.materiais;
-      parts.push(`+${spot.contents.materiais} Materiais`);
-    }
-    if (spot.contents.municao) {
-      world.runLoot.municao += spot.contents.municao;
-      world.player.ammoReserve += spot.contents.municao;
-      parts.push(`+${spot.contents.municao} Munição`);
-    }
-
-    const summary = `${spot.label}: ${parts.join(', ')}`;
-    world.lastEventBanner = `Coletado — ${summary}`;
-    addFloatingFeedback(world, parts.join(' '), spot.x, spot.y - 18, '#10b981');
+    const res = collectFromLootSpot(world, prompt.id);
+    world.activeLooting = null;
     world.activePrompt = findNearestInteractable(world);
-
-    return { interacted: true, action: 'looted', summary };
+    if (!res.collected) {
+      return {
+        interacted: false,
+        action: res.full ? 'inventory_full' : undefined,
+        summary: res.summary,
+      };
+    }
+    return { interacted: true, action: 'looted', summary: res.summary };
   }
 
   if (prompt.targetType === 'extraction') {
@@ -836,10 +1090,11 @@ export function stepWorld(
   if (input.switchWeaponJustPressed) {
     p.equippedWeapon = p.equippedWeapon === 'pistola' ? 'facao' : 'pistola';
     p.reloadTimer = 0;
+    p.meleeSwingTimer = 0;
     world.lastEventBanner =
       p.equippedWeapon === 'pistola'
         ? 'Equipada: Pistola Tática 9mm'
-        : 'Equipado: Facão / Pé de Cabra (Corpo a Corpo)';
+        : 'Equipado: Facão Tático (Cone de Golpe Silencioso)';
   }
 
   if (input.reloadJustPressed && p.equippedWeapon === 'pistola') {
@@ -865,20 +1120,24 @@ export function stepWorld(
     return world;
   }
 
-  // --- Day / Night Cycle & Dynamic Lighting Clock ---
+  // --- Day / Night Cycle & Balanced Lighting Clock ---
+  const prevClock = world.dayNightClock;
   world.dayNightClock = (world.dayNightClock + dt) % 180;
-  if (world.dayNightClock < 45) {
-    world.timeOfDay = 'dia';
-    world.ambientDarkness = 0.16;
-  } else if (world.dayNightClock < 90) {
-    world.timeOfDay = 'entardecer';
-    world.ambientDarkness = 0.44;
-  } else if (world.dayNightClock < 150) {
-    world.timeOfDay = 'noite';
-    world.ambientDarkness = 0.78;
-  } else {
-    world.timeOfDay = 'madrugada';
-    world.ambientDarkness = 0.60;
+  // Only overwrite ambientDarkness when transitioning or if within normal cycle bounds
+  if (Math.floor(prevClock / 45) !== Math.floor(world.dayNightClock / 45)) {
+    if (world.dayNightClock < 45) {
+      world.timeOfDay = 'dia';
+      world.ambientDarkness = 0.10;
+    } else if (world.dayNightClock < 90) {
+      world.timeOfDay = 'entardecer';
+      world.ambientDarkness = 0.24;
+    } else if (world.dayNightClock < 150) {
+      world.timeOfDay = 'noite';
+      world.ambientDarkness = 0.42;
+    } else {
+      world.timeOfDay = 'madrugada';
+      world.ambientDarkness = 0.34;
+    }
   }
 
   // --- Building Interior Check (Indoor Roof Shadow & Ambiance) ---
@@ -890,7 +1149,7 @@ export function stepWorld(
     world.currentBuildingName = currentBuilding.name;
     p.isInsideBuilding = currentBuilding.id;
     p.currentBuildingName = currentBuilding.name;
-    world.ambientDarkness = Math.max(world.ambientDarkness, 0.68);
+    world.ambientDarkness = Math.max(world.ambientDarkness, 0.36);
   } else {
     world.isInsideBuilding = false;
     world.currentBuildingName = null;
@@ -940,28 +1199,31 @@ export function stepWorld(
       cancelHealing(world, 'Esquiva interrompeu o curativo!');
     }
   } else if (p.dodgeTimer <= 0) {
-    const wantsSprint = input.sprintHeld && moveMag > 0.1 && p.stamina > 4;
-    p.sprinting = wantsSprint;
-
-    if (wantsSprint) {
-      p.stamina = Math.max(0, p.stamina - 26 * dt);
-    } else {
-      p.stamina = Math.min(p.maxStamina, p.stamina + 18 * dt);
-    }
-
-    const baseSpeed = 185;
-    // When actively bandaging wounds, speed is reduced to cautious crawl
-    const healingSpeedMod = p.healing?.active ? 0.38 : 1.0;
-    const speedMultiplier = (wantsSprint ? 1.42 : 1.0) * healingSpeedMod;
-    const targetVx = normX * baseSpeed * speedMultiplier;
-    const targetVy = normY * baseSpeed * speedMultiplier;
-    const accelRate = moveMag > 0.05 ? 18 : 14;
-    const blend = Math.min(1, dt * accelRate);
-    p.vx += (targetVx - p.vx) * blend;
-    p.vy += (targetVy - p.vy) * blend;
-    if (moveMag <= 0.05 && Math.hypot(p.vx, p.vy) < 4) {
+    if (moveMag <= 0.05) {
+      // Immediate stop when joystick/keys are released so character never drifts
       p.vx = 0;
       p.vy = 0;
+      p.sprinting = false;
+      p.stamina = Math.min(p.maxStamina, p.stamina + 18 * dt);
+    } else {
+      const wantsSprint = input.sprintHeld && moveMag > 0.1 && p.stamina > 4;
+      p.sprinting = wantsSprint;
+
+      if (wantsSprint) {
+        p.stamina = Math.max(0, p.stamina - 26 * dt);
+      } else {
+        p.stamina = Math.min(p.maxStamina, p.stamina + 18 * dt);
+      }
+
+      const baseSpeed = 185;
+      // When actively bandaging wounds, speed is reduced to cautious crawl
+      const healingSpeedMod = p.healing?.active ? 0.38 : 1.0;
+      const speedMultiplier = (wantsSprint ? 1.42 : 1.0) * healingSpeedMod;
+      const targetVx = normX * baseSpeed * speedMultiplier;
+      const targetVy = normY * baseSpeed * speedMultiplier;
+      const blend = Math.min(1, dt * 18);
+      p.vx += (targetVx - p.vx) * blend;
+      p.vy += (targetVy - p.vy) * blend;
     }
   }
 
@@ -981,59 +1243,61 @@ export function stepWorld(
     }
   }
 
-  // Automatic Proximity Looting with Furniture-Specific Duration & Squeak Noise:
+  // Contextual Proximity Looting with Object-Specific Duration, Wall Check & Capacity Check:
   const nearestLoot = world.lootSpots.find(
-    (s) => !s.looted && Math.hypot(s.x - p.x, s.y - p.y) <= s.radius + p.radius + 26
+    (s) =>
+      !s.looted &&
+      Math.hypot(s.x - p.x, s.y - p.y) <= s.radius + p.radius + 26 &&
+      !isSegmentBlockedByWall(p.x, p.y, s.x, s.y, world.obstacles)
   );
 
   if (nearestLoot) {
-    const duration = nearestLoot.searchDuration || 1.0;
-    if (!world.activeLooting || world.activeLooting.spotId !== nearestLoot.id) {
-      world.activeLooting = {
-        spotId: nearestLoot.id,
-        progress: 0,
-        duration,
-      };
-      // Opening drawer / rustling sound
-      emitNoise(world, nearestLoot.x, nearestLoot.y, 90, 'loot');
+    const maxCap = world.maxCarryCapacity ?? DEFAULT_MAX_CARRY_CAPACITY;
+    const isFullForSpot =
+      getCarryLoad(world.runLoot) >= maxCap && (nearestLoot.contents.municao ?? 0) <= 0;
+
+    if (isFullForSpot) {
+      world.activeLooting = null;
+      nearestLoot.searchState = 'available';
+      world.lastEventBanner = 'Mochila cheia! Extraia no abrigo antes de coletar mais suprimentos.';
     } else {
-      const prevProg = world.activeLooting.progress;
-      world.activeLooting.progress += dt;
+      const duration = nearestLoot.searchDuration || 1.0;
+      if (!world.activeLooting || world.activeLooting.spotId !== nearestLoot.id) {
+        world.activeLooting = {
+          spotId: nearestLoot.id,
+          progress: 0,
+          duration,
+        };
+        nearestLoot.searchState = 'searching';
+        // Opening compartment / rustling sound
+        emitNoise(world, nearestLoot.x, nearestLoot.y, 90, 'loot');
+      } else {
+        const prevProg = world.activeLooting.progress;
+        world.activeLooting.progress += dt;
+        nearestLoot.searchState = 'searching';
 
-      // Diegetic container noise at midpoint if container squeaks
-      if (nearestLoot.noiseOnSearch && prevProg < duration * 0.5 && world.activeLooting.progress >= duration * 0.5) {
-        emitNoise(world, nearestLoot.x, nearestLoot.y, 130, 'loot');
-      }
-
-      if (world.activeLooting.progress >= world.activeLooting.duration) {
-        // Complete loot action
-        nearestLoot.looted = true;
-        const parts: string[] = [];
-        if (nearestLoot.contents.comida) {
-          world.runLoot.comida += nearestLoot.contents.comida;
-          parts.push(`+${nearestLoot.contents.comida} Comida`);
-        }
-        if (nearestLoot.contents.medicamentos) {
-          world.runLoot.medicamentos += nearestLoot.contents.medicamentos;
-          parts.push(`+${nearestLoot.contents.medicamentos} Remédios`);
-        }
-        if (nearestLoot.contents.materiais) {
-          world.runLoot.materiais += nearestLoot.contents.materiais;
-          parts.push(`+${nearestLoot.contents.materiais} Materiais`);
-        }
-        if (nearestLoot.contents.municao) {
-          world.runLoot.municao += nearestLoot.contents.municao;
-          world.player.ammoReserve += nearestLoot.contents.municao;
-          parts.push(`+${nearestLoot.contents.municao} Munição`);
+        // Diegetic container noise at midpoint if container squeaks
+        if (
+          nearestLoot.noiseOnSearch &&
+          prevProg < duration * 0.5 &&
+          world.activeLooting.progress >= duration * 0.5
+        ) {
+          emitNoise(world, nearestLoot.x, nearestLoot.y, 130, 'loot');
         }
 
-        const summary = `${nearestLoot.label}: ${parts.join(', ')}`;
-        world.lastEventBanner = `Vasculhado — ${summary}`;
-        addFloatingFeedback(world, parts.join(' '), nearestLoot.x, nearestLoot.y - 18, '#10b981');
-        world.activeLooting = null;
+        if (world.activeLooting.progress >= world.activeLooting.duration) {
+          collectFromLootSpot(world, nearestLoot.id);
+          world.activeLooting = null;
+        }
       }
     }
   } else {
+    if (world.activeLooting) {
+      const prevSpot = world.lootSpots.find((s) => s.id === world.activeLooting?.spotId);
+      if (prevSpot && !prevSpot.looted) {
+        prevSpot.searchState = 'available';
+      }
+    }
     world.activeLooting = null;
   }
 
@@ -1062,7 +1326,7 @@ export function stepWorld(
   // Attack handling (supports attacking while moving)
   if (input.attackJustPressed || input.attackHeld) {
     if (p.healing?.active) {
-      cancelHealing(world, 'Disparo interrompeu o curativo!');
+      cancelHealing(world, 'Ataque interrompeu o curativo!');
     }
     performAttack(world);
   }
@@ -1114,7 +1378,7 @@ export function stepWorld(
     }
   }
 
-  // Step Zombies: Directional Sight + Acoustic Detection AI
+  // Step Zombies: Directional Sight + Acoustic Detection AI + Smooth Slower Pursuit
   let activeWindups = 0;
   for (let i = world.zombies.length - 1; i >= 0; i--) {
     const z = world.zombies[i];
@@ -1159,8 +1423,8 @@ export function stepWorld(
 
     // Base effective sight range: daylight vs dark
     let effectiveSightRange = z.visionRange;
-    if (world.ambientDarkness > 0.5) {
-      effectiveSightRange = 95; // drastically reduced sight in deep night / dark interiors
+    if (world.ambientDarkness >= 0.35) {
+      effectiveSightRange = 95; // reduced sight in night / dark interiors when flashlight is off
     }
 
     // Flashlight detection: if player flashlight is ON, light reflects and alerts zombie from far
@@ -1168,7 +1432,8 @@ export function stepWorld(
       const anglePlayerToZ = Math.abs(
         ((Math.atan2(-dy, -dx) - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
       );
-      const isLitByFlashlight = anglePlayerToZ <= p.flashlight.coneAngle * 0.5 && distToPlayer <= p.flashlight.range;
+      const isLitByFlashlight =
+        anglePlayerToZ <= p.flashlight.coneAngle * 0.5 && distToPlayer <= p.flashlight.range;
       if (isLitByFlashlight || distToPlayer <= 260) {
         effectiveSightRange = Math.max(effectiveSightRange, 280);
       }
@@ -1184,7 +1449,7 @@ export function stepWorld(
       z.alertTimer = 6.0;
       z.targetPoint = { x: p.x, y: p.y };
     } else if (distToPlayer <= 110) {
-      // Close footstep / breathing / odor detection even from behind
+      // Close footstep / breathing detection even from behind
       isAlerted = true;
       z.alertState = 'hunting';
       z.alertTimer = 4.0;
@@ -1220,19 +1485,31 @@ export function stepWorld(
       }
     }
 
+    const zCfg = ZOMBIE_ARCHETYPE_CONFIG[z.archetype] ?? ZOMBIE_ARCHETYPE_CONFIG.lento;
+
     if (isAlerted) {
       const tdx = targetX - z.x;
       const tdy = targetY - z.y;
-      z.facingAngle = Math.atan2(tdy, tdx);
+      const desiredAngle = Math.atan2(tdy, tdx);
+
+      // Smooth angular turning so zombie rotation is natural
+      const turnDiff =
+        ((desiredAngle - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      z.facingAngle += turnDiff * Math.min(1, dt * 12);
 
       // Handle windup attack telegraph if near actual player
       if (z.isWindingUp) {
         activeWindups += 1;
         z.windupTimer -= dt;
+        z.vx = 0;
+        z.vy = 0;
         if (z.windupTimer <= 0) {
           z.isWindingUp = false;
-          z.attackCooldown = z.archetype === 'corredor' ? 0.85 : 1.15;
-          if (distToPlayer <= z.attackRange + p.radius + 10) {
+          z.attackCooldown = zCfg.attackCooldown;
+          if (
+            distToPlayer <= z.attackRange + p.radius + 10 &&
+            !isSegmentBlockedByWall(z.x, z.y, p.x, p.y, world.obstacles)
+          ) {
             applyDamageToPlayer(world, z.damage, z.name);
           }
         }
@@ -1240,22 +1517,31 @@ export function stepWorld(
       }
 
       // Start attack windup if within attack range of player
-      if (distToPlayer <= z.attackRange + p.radius && z.attackCooldown <= 0 && activeWindups < 3) {
+      if (
+        distToPlayer <= z.attackRange + p.radius &&
+        z.attackCooldown <= 0 &&
+        activeWindups < 3 &&
+        !isSegmentBlockedByWall(z.x, z.y, p.x, p.y, world.obstacles)
+      ) {
         z.isWindingUp = true;
-        z.windupTimer = z.archetype === 'bruto' ? 0.45 : 0.28;
+        z.windupTimer = zCfg.windupDuration;
+        z.vx = 0;
+        z.vy = 0;
         activeWindups += 1;
         continue;
       }
 
-      // Movement behavior policy by archetype
-      let moveAngle = z.facingAngle;
+      // Movement behavior policy by archetype with smooth velocity acceleration
+      let moveAngle = desiredAngle;
       if (z.archetype === 'corredor' && distToPlayer > 95) {
-        // Corredor weaves at a flanking angle while closing distance
-        moveAngle += z.flankSign * 0.48;
+        moveAngle += z.flankSign * 0.45;
       }
 
-      z.vx = Math.cos(moveAngle) * z.speed;
-      z.vy = Math.sin(moveAngle) * z.speed;
+      const targetVx = Math.cos(moveAngle) * z.speed;
+      const targetVy = Math.sin(moveAngle) * z.speed;
+      const accelBlend = Math.min(1, dt * 14);
+      z.vx += (targetVx - z.vx) * accelBlend;
+      z.vy += (targetVy - z.vy) * accelBlend;
 
       const movedZ = moveEntityWithCollisions(
         z.x,
@@ -1270,6 +1556,28 @@ export function stepWorld(
       );
       z.x = movedZ.x;
       z.y = movedZ.y;
+
+      // Prevent zombie from walking through the player body
+      const afterDx = z.x - p.x;
+      const afterDy = z.y - p.y;
+      const afterDist = Math.hypot(afterDx, afterDy);
+      const minSep = z.radius + p.radius;
+      if (afterDist > 0.001 && afterDist < minSep) {
+        const push = minSep - afterDist;
+        const pushed = moveEntityWithCollisions(
+          z.x + (afterDx / afterDist) * push,
+          z.y + (afterDy / afterDist) * push,
+          0,
+          0,
+          z.radius,
+          dt,
+          world.obstacles,
+          world.worldWidth,
+          world.worldHeight
+        );
+        z.x = pushed.x;
+        z.y = pushed.y;
+      }
     } else {
       z.vx = 0;
       z.vy = 0;

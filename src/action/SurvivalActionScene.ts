@@ -1,11 +1,15 @@
 import Phaser from 'phaser';
 import {
   createDefaultInputState,
+  getRayObstacleDistance,
+  isSegmentBlockedByWall,
   stepWorld,
+  WEAPON_CONFIG,
 } from './actionRules.ts';
 import type {
   ActionInputState,
   ActionWorldState,
+  LootSpot,
   ZombieEntity,
 } from './actionTypes.ts';
 import { soundFX } from '../utils/sound.ts';
@@ -197,15 +201,42 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.buildStaticEnvironment();
     this.syncEntitySprites();
 
-    // Pointer listeners on canvas
+    // Pointer listeners on canvas (supports tapping directly on contextual objects + desktop mouse)
     this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+      if (pointer.wasTouch) return;
       this.mouseScreenX = pointer.x;
       this.mouseScreenY = pointer.y;
       this.hasMouseMoved = true;
     });
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.button === 0) {
+      const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const p = this.worldState.player;
+
+      // Check if tapping directly on an eligible contextual object or extraction gate
+      const tappedLoot = this.worldState.lootSpots.find(
+        (s) =>
+          !s.looted &&
+          Math.hypot(worldPoint.x - s.x, worldPoint.y - s.y) <= s.radius + 36 &&
+          Math.hypot(s.x - p.x, s.y - p.y) <= s.radius + p.radius + 28 &&
+          !isSegmentBlockedByWall(p.x, p.y, s.x, s.y, this.worldState.obstacles)
+      );
+      if (tappedLoot) {
+        this.bridge.queuedInteract = true;
+        return;
+      }
+
+      const ext = this.worldState.extractionZone;
+      if (
+        Math.hypot(worldPoint.x - ext.x, worldPoint.y - ext.y) <= ext.radius + 24 &&
+        Math.hypot(ext.x - p.x, ext.y - p.y) <= ext.radius + p.radius + 16
+      ) {
+        this.bridge.queuedInteract = true;
+        return;
+      }
+
+      // Desktop mouse aiming/attacking (ignore touch pointers so mobile sticks have exclusive control)
+      if (!pointer.wasTouch && pointer.button === 0) {
         this.mouseScreenX = pointer.x;
         this.mouseScreenY = pointer.y;
         this.hasMouseMoved = true;
@@ -214,9 +245,13 @@ export class SurvivalActionScene extends Phaser.Scene {
       }
     });
 
-    this.input.on('pointerup', () => {
+    const releaseMouse = () => {
       this.mouseDown = false;
-    });
+    };
+
+    this.input.on('pointerup', releaseMouse);
+    this.input.on('pointerupoutside', releaseMouse);
+    this.input.on('gameout', releaseMouse);
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -238,6 +273,13 @@ export class SurvivalActionScene extends Phaser.Scene {
       this.justPressedKeys.clear();
       this.mouseDown = false;
       this.mouseJustPressed = false;
+      if (this.bridge) {
+        this.bridge.joyMoveX = 0;
+        this.bridge.joyMoveY = 0;
+        this.bridge.attackHeld = false;
+        this.bridge.sprintHeld = false;
+        this.bridge.aimAngle = null;
+      }
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -494,11 +536,20 @@ export class SurvivalActionScene extends Phaser.Scene {
       car_avenida_2: 1,
       car_ambulancia: 2,
       car_viatura: 3,
+      car_sedan: 0,
+      car_pickup: 1,
+      car_kombi: 2,
+      c_viatura_1: 3,
+      c_ambulancia: 2,
+      c_carro_batido: 0,
+      c_carro_sul: 1,
+      m_caminhao_tropa: 1,
+      m_ambulancia_isolamento: 2,
     };
 
     for (const obs of this.worldState.obstacles) {
       // Cast directional ground shadow (South-East)
-      g.fillStyle(0x070605, 0.7);
+      g.fillStyle(0x070605, 0.65);
       g.fillRect(obs.x + 5, obs.y + 6, obs.width, obs.height);
 
       if (obs.kind === 'wall') {
@@ -515,10 +566,10 @@ export class SurvivalActionScene extends Phaser.Scene {
             .setDepth(6);
           this.staticLayerGroup.add(wallTile);
         } else {
-          g.fillStyle(0x2e241e, 1);
+          g.fillStyle(0x3a2e27, 1);
           g.fillRect(obs.x, obs.y, obs.width, obs.height);
         }
-        g.lineStyle(1.5, 0x120e0c, 0.95);
+        g.lineStyle(1.5, 0x181310, 0.95);
         g.strokeRect(obs.x, obs.y, obs.width, obs.height);
       } else if (obs.kind === 'car') {
         if (hasVehicles) {
@@ -534,16 +585,16 @@ export class SurvivalActionScene extends Phaser.Scene {
             .setDepth(7);
           this.staticLayerGroup.add(carSprite);
         } else {
-          g.fillStyle(0x3c2824, 1);
+          g.fillStyle(0x4a322d, 1);
           g.fillRoundedRect(obs.x, obs.y, obs.width, obs.height, 4);
         }
       } else if (obs.kind === 'crate') {
         // Interior store gondola / pharmacy counter / workshop bench
-        g.fillStyle(0x171310, 1);
+        g.fillStyle(0x1c1713, 1);
         g.fillRect(obs.x, obs.y, obs.width, obs.height);
-        g.fillStyle(0x3b2d20, 1);
+        g.fillStyle(0x473627, 1);
         g.fillRect(obs.x + 2, obs.y + 2, obs.width - 4, obs.height - 4);
-        g.lineStyle(1.5, 0x54402e, 0.9);
+        g.lineStyle(1.5, 0x69503a, 0.9);
         g.strokeRect(obs.x + 2, obs.y + 2, obs.width - 4, obs.height - 4);
         // Divided shelf compartments
         for (let sx = obs.x + 26; sx < obs.x + obs.width - 16; sx += 26) {
@@ -551,26 +602,14 @@ export class SurvivalActionScene extends Phaser.Scene {
         }
       } else {
         // Concrete roadblock / wooden barricade
-        g.fillStyle(0x1a1917, 1);
+        g.fillStyle(0x211f1d, 1);
         g.fillRect(obs.x, obs.y, obs.width, obs.height);
-        g.fillStyle(0x3d3a36, 1);
+        g.fillStyle(0x4a4641, 1);
         g.fillRect(obs.x + 2, obs.y + 2, obs.width - 4, obs.height - 4);
         // Hazard weathering stripes
-        g.fillStyle(0x8c5828, 0.7);
+        g.fillStyle(0x9e632d, 0.75);
         g.fillRect(obs.x + 6, obs.y + 4, 10, obs.height - 8);
         g.fillRect(obs.x + obs.width - 16, obs.y + 4, 10, obs.height - 8);
-      }
-    }
-
-    // 6. Create Pixel-Art Supply Crate Sprites for Loot Spots
-    if (hasTileset) {
-      for (const spot of this.worldState.lootSpots) {
-        const spr = this.add
-          .sprite(spot.x, spot.y, 'urban_tileset', spot.looted ? 13 : 12)
-          .setDepth(6)
-          .setScale(1.05);
-        this.staticLayerGroup.add(spr);
-        this.lootSpriteMap.set(spot.id, spr);
       }
     }
   }
@@ -846,9 +885,16 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     this.renderDynamicEntities(clampedDt);
 
+    const immediateHudSync =
+      input.toggleFlashlightJustPressed ||
+      input.switchWeaponJustPressed ||
+      input.interactJustPressed ||
+      input.healJustPressed;
+
     this.hudSyncAccumulator += clampedDt;
     if (
-      this.hudSyncAccumulator >= 0.065 ||
+      immediateHudSync ||
+      this.hudSyncAccumulator >= 0.055 ||
       this.worldState.status !== 'playing'
     ) {
       this.hudSyncAccumulator = 0;
@@ -866,16 +912,158 @@ export class SurvivalActionScene extends Phaser.Scene {
       return rowOffset + 6; // Stagger hurt frame
     }
     if (z.isWindingUp) {
-      const totalWindup = z.archetype === 'bruto' ? 0.45 : 0.28;
+      const totalWindup = z.archetype === 'bruto' ? 0.45 : 0.34;
       return z.windupTimer > totalWindup * 0.5 ? rowOffset + 4 : rowOffset + 5;
     }
     const speed = Math.hypot(z.vx, z.vy);
-    if (speed > 6) {
-      const rate = z.archetype === 'corredor' ? 11 : z.archetype === 'bruto' ? 5.5 : 7;
+    if (speed > 4) {
+      const rate = z.archetype === 'corredor' ? 9 : z.archetype === 'bruto' ? 4.5 : 5.5;
       const stepIdx = Math.floor(this.worldState.elapsedTime * rate) % 4;
       return rowOffset + stepIdx;
     }
     return rowOffset;
+  }
+
+  private renderLootObjectVisual(
+    dG: Phaser.GameObjects.Graphics,
+    spot: LootSpot,
+    isNearest: boolean,
+    isBeingLooted: boolean,
+    pulse: number
+  ): void {
+    const { x, y, containerType, looted } = spot;
+    const alpha = looted ? 0.48 : 0.96;
+
+    // If linked to an existing vehicle or counter obstacle, render a contextual compartment marker on the object
+    if (containerType === 'porta_malas' || containerType === 'porta_luvas') {
+      const latchW = 22;
+      const latchH = 10;
+      dG.fillStyle(looted ? 0x1f2421 : 0x2b221a, alpha);
+      dG.fillRect(x - latchW * 0.5, y - latchH * 0.5, latchW, latchH);
+      dG.lineStyle(1.5, looted ? 0x475569 : 0xd9822b, alpha);
+      dG.strokeRect(x - latchW * 0.5, y - latchH * 0.5, latchW, latchH);
+      if (looted) {
+        // Open trunk lid flap
+        dG.fillStyle(0x0f1317, 0.75);
+        dG.fillRect(x - 8, y - 4, 16, 6);
+      }
+    } else if (containerType === 'geladeira') {
+      // Top-down refrigerator unit with metallic door & handle
+      dG.fillStyle(0x090807, 0.55);
+      dG.fillRect(x - 15, y - 13, 34, 30);
+      dG.fillStyle(looted ? 0x475569 : 0x94a3b8, alpha);
+      dG.fillRect(x - 16, y - 14, 32, 28);
+      dG.lineStyle(1.5, 0x1e293b, alpha);
+      dG.strokeRect(x - 16, y - 14, 32, 28);
+      // Door seal & handle
+      dG.fillStyle(0x334155, alpha);
+      dG.fillRect(x - 14, y + 8, 28, 4);
+      if (looted) {
+        // Door swung ajar
+        dG.lineStyle(2.5, 0x64748b, 0.85);
+        dG.lineBetween(x - 14, y + 12, x - 4, y + 24);
+      }
+    } else if (containerType === 'armario') {
+      // Top-down tall cabinet with double doors
+      dG.fillStyle(0x090807, 0.55);
+      dG.fillRect(x - 17, y - 11, 38, 26);
+      dG.fillStyle(looted ? 0x2b231d : 0x4a3728, alpha);
+      dG.fillRect(x - 18, y - 12, 36, 24);
+      dG.lineStyle(1.5, 0x78593f, alpha);
+      dG.strokeRect(x - 18, y - 12, 36, 24);
+      dG.lineBetween(x, y - 12, x, y + 12);
+      if (looted) {
+        // Open cabinet doors
+        dG.lineStyle(2, 0x6b4f38, 0.85);
+        dG.lineBetween(x - 17, y + 12, x - 24, y + 20);
+        dG.lineBetween(x + 17, y + 12, x + 24, y + 20);
+      }
+    } else if (containerType === 'gaveta') {
+      // Top-down dresser / desk with sliding drawer
+      dG.fillStyle(0x090807, 0.55);
+      dG.fillRect(x - 15, y - 11, 34, 24);
+      dG.fillStyle(looted ? 0x29211b : 0x523a28, alpha);
+      dG.fillRect(x - 16, y - 12, 32, 22);
+      dG.lineStyle(1.5, 0x855f42, alpha);
+      dG.strokeRect(x - 16, y - 12, 32, 22);
+      // Sliding drawer compartment
+      const slideOffset = looted ? 8 : isBeingLooted ? 4 : 0;
+      dG.fillStyle(0x3b291c, alpha);
+      dG.fillRect(x - 11, y + 4 + slideOffset, 22, 8);
+      dG.lineStyle(1, 0xa37855, alpha);
+      dG.strokeRect(x - 11, y + 4 + slideOffset, 22, 8);
+    } else if (containerType === 'gondola') {
+      // Top-down shelving rack with supply items
+      dG.fillStyle(0x1f2421, alpha);
+      dG.fillRect(x - 18, y - 10, 36, 20);
+      dG.lineStyle(1.5, looted ? 0x475569 : 0x52b788, alpha);
+      dG.strokeRect(x - 18, y - 10, 36, 20);
+      if (!looted) {
+        dG.fillStyle(0xd9822b, 0.9);
+        dG.fillRect(x - 12, y - 6, 8, 6);
+        dG.fillStyle(0x38bdf8, 0.85);
+        dG.fillRect(x + 2, y - 5, 10, 5);
+      }
+    } else if (containerType === 'cofre') {
+      // Reinforced steel safe with combination dial
+      dG.fillStyle(0x090807, 0.6);
+      dG.fillRect(x - 14, y - 13, 32, 28);
+      dG.fillStyle(looted ? 0x1e293b : 0x334155, alpha);
+      dG.fillRect(x - 15, y - 14, 30, 26);
+      dG.lineStyle(2, looted ? 0x475569 : 0x94a3b8, alpha);
+      dG.strokeRect(x - 15, y - 14, 30, 26);
+      dG.fillStyle(looted ? 0x64748b : 0xf59e0b, alpha);
+      dG.fillCircle(x + 5, y, 4);
+    } else if (containerType === 'maca') {
+      // Hospital surgical gurney / stretcher
+      dG.fillStyle(0x090807, 0.5);
+      dG.fillRect(x - 18, y - 10, 38, 22);
+      dG.fillStyle(looted ? 0x334155 : 0xcbd5e1, alpha);
+      dG.fillRoundedRect(x - 18, y - 11, 36, 20, 3);
+      dG.lineStyle(1.5, 0x64748b, alpha);
+      dG.strokeRoundedRect(x - 18, y - 11, 36, 20, 3);
+      if (!looted) {
+        dG.fillStyle(0xef4444, 0.85);
+        dG.fillRect(x - 4, y - 6, 8, 8);
+      }
+    } else {
+      // Workbench / tool table ('bancada')
+      dG.fillStyle(0x090807, 0.55);
+      dG.fillRect(x - 18, y - 11, 38, 24);
+      dG.fillStyle(looted ? 0x26211d : 0x47382b, alpha);
+      dG.fillRect(x - 18, y - 12, 36, 22);
+      dG.lineStyle(1.5, 0x6c8ca8, alpha);
+      dG.strokeRect(x - 18, y - 12, 36, 22);
+    }
+
+    // State indicator: Available vs Searching vs Searched
+    if (!looted) {
+      if (isBeingLooted && this.worldState.activeLooting) {
+        const progress = Math.min(
+          1,
+          this.worldState.activeLooting.progress / this.worldState.activeLooting.duration
+        );
+        dG.lineStyle(3, 0x10b981, 0.95);
+        dG.beginPath();
+        dG.arc(
+          x,
+          y,
+          spot.radius * 0.72,
+          -Math.PI / 2,
+          -Math.PI / 2 + progress * Math.PI * 2,
+          false
+        );
+        dG.strokePath();
+      } else if (isNearest) {
+        // Highlighted eligible object in interaction range
+        dG.lineStyle(2, 0xf59e0b, 0.65 + pulse * 0.3);
+        dG.strokeCircle(x, y, spot.radius * 0.68);
+      } else {
+        // Discreet glint showing object has not been searched yet
+        dG.lineStyle(1.2, 0xd9822b, 0.22 + pulse * 0.2);
+        dG.strokeCircle(x, y, 16);
+      }
+    }
   }
 
   private renderDynamicEntities(dt: number): void {
@@ -897,57 +1085,25 @@ export class SurvivalActionScene extends Phaser.Scene {
     dG.lineStyle(2, 0x52b788, 0.35 + pulse * 0.4);
     dG.strokeCircle(ext.x, ext.y, ext.radius - 6 + pulse * 5);
 
-    // 2. Update Loot Crate Sprites & Subtle Interaction / Looting Rings
-    const colorMap = {
-      comida: 0xd9822b,
-      medicamentos: 0xc94a38,
-      municao: 0xc27829,
-      materiais: 0x6c8ca8,
-      misto: 0x52b788,
-    };
-
+    // 2. Render Contextual Searchable Furniture & Vehicle Compartments
     for (const spot of w.lootSpots) {
-      const spr = this.lootSpriteMap.get(spot.id);
-      if (spr) {
-        spr.setFrame(spot.looted ? 13 : 12);
-        spr.setAlpha(spot.looted ? 0.55 : 1);
-      }
-      if (!spot.looted) {
-        const accent = colorMap[spot.kind];
-        const isBeingLooted = w.activeLooting?.spotId === spot.id;
+      const isBeingLooted = w.activeLooting?.spotId === spot.id;
+      const isNearest = w.activePrompt?.targetType === 'loot' && w.activePrompt.id === spot.id;
+      this.renderLootObjectVisual(dG, spot, isNearest, isBeingLooted, pulse);
 
-        if (isBeingLooted && w.activeLooting) {
-          // Looting in progress: pulsing amber ring + progress arc
-          const progress = Math.min(1, w.activeLooting.progress / w.activeLooting.duration);
-          dG.lineStyle(3, 0x10b981, 0.95);
-          dG.beginPath();
-          dG.arc(
-            spot.x,
-            spot.y,
-            spot.radius + 8,
-            -Math.PI / 2,
-            -Math.PI / 2 + progress * Math.PI * 2,
-            false
-          );
-          dG.strokePath();
-
-          // Progress indicator at player position too
-          dG.lineStyle(2, 0x10b981, 0.85);
-          dG.beginPath();
-          dG.arc(
-            p.x,
-            p.y,
-            p.radius + 14,
-            -Math.PI / 2,
-            -Math.PI / 2 + progress * Math.PI * 2,
-            false
-          );
-          dG.strokePath();
-        } else {
-          // Available for looting: subtle dotted aura
-          dG.lineStyle(1.5, accent, 0.28 + pulse * 0.32);
-          dG.strokeCircle(spot.x, spot.y, spot.radius * 0.58);
-        }
+      if (isBeingLooted && w.activeLooting) {
+        const progress = Math.min(1, w.activeLooting.progress / w.activeLooting.duration);
+        dG.lineStyle(2.5, 0x10b981, 0.9);
+        dG.beginPath();
+        dG.arc(
+          p.x,
+          p.y,
+          p.radius + 13,
+          -Math.PI / 2,
+          -Math.PI / 2 + progress * Math.PI * 2,
+          false
+        );
+        dG.strokePath();
       }
     }
 
@@ -956,7 +1112,8 @@ export class SurvivalActionScene extends Phaser.Scene {
       const lifeFraction = Math.max(0, ne.timer / ne.duration);
       const currentRadius = ne.radius * (1 - lifeFraction);
       const alpha = lifeFraction * (ne.source === 'gunshot' ? 0.45 : 0.25);
-      const ringColor = ne.source === 'gunshot' ? 0xf59e0b : ne.source === 'sprint' ? 0x94a3b8 : 0x52b788;
+      const ringColor =
+        ne.source === 'gunshot' ? 0xf59e0b : ne.source === 'sprint' ? 0x94a3b8 : 0x52b788;
 
       dG.lineStyle(1.8, ringColor, alpha);
       dG.strokeCircle(ne.x, ne.y, currentRadius);
@@ -1013,11 +1170,12 @@ export class SurvivalActionScene extends Phaser.Scene {
       this.walkAnimTime += dt * 2.0;
     }
 
+    const isMachete = p.equippedWeapon === 'facao';
+
     if (this.playerSprite) {
       this.playerSprite.setPosition(p.x, p.y);
       this.playerSprite.setRotation(p.facingAngle);
 
-      const isMachete = p.equippedWeapon === 'facao';
       let frame = isMachete ? 8 : 0;
 
       if (!isMachete && this.shotFlashTimer > 0) {
@@ -1025,7 +1183,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       } else if (!isMachete && p.reloadTimer > 0) {
         frame = 7; // Pistol reload frame
       } else if (isMachete && p.meleeSwingTimer > 0) {
-        frame = p.meleeSwingTimer > 0.1 ? 14 : 15; // 2-stage machete cleave
+        frame = p.meleeSwingTimer > 0.11 ? 14 : 15; // 2-stage machete cleave
       } else if (speed > 12) {
         const stepFrame = Math.floor(this.walkAnimTime) % 4;
         frame = (isMachete ? 10 : 2) + stepFrame;
@@ -1036,7 +1194,6 @@ export class SurvivalActionScene extends Phaser.Scene {
 
       this.playerSprite.setFrame(frame);
 
-      // Subtle sprint lean / dodge scale feedback
       const scaleMod = p.dodgeTimer > 0 ? 1.42 : p.sprinting ? 1.37 : 1.32;
       this.playerSprite.setScale(scaleMod);
 
@@ -1056,16 +1213,90 @@ export class SurvivalActionScene extends Phaser.Scene {
     const pCos = Math.cos(p.facingAngle);
     const pSin = Math.sin(p.facingAngle);
 
-    // Subtle tactical aim line
-    dG.lineStyle(1, 0xd9822b, 0.22);
-    dG.lineBetween(
-      p.x + pCos * (p.radius + 10),
-      p.y + pSin * (p.radius + 10),
-      p.x + pCos * 165,
-      p.y + pSin * 165
-    );
+    // --- WEAPON-SPECIFIC DIRECTIONAL AIM REPRESENTATION ---
+    if (!isMachete) {
+      // PISTOL AIM: Crisp directional firearm line clipped against walls
+      const maxSight = WEAPON_CONFIG.pistola.sightRange;
+      const clippedSight = getRayObstacleDistance(
+        p.x,
+        p.y,
+        p.facingAngle,
+        maxSight,
+        w.obstacles,
+        true
+      );
+      const startDist = p.radius + 10;
+      if (clippedSight > startDist) {
+        const endX = p.x + pCos * clippedSight;
+        const endY = p.y + pSin * clippedSight;
+        dG.lineStyle(1.5, 0xf59e0b, 0.38);
+        dG.lineBetween(p.x + pCos * startDist, p.y + pSin * startDist, endX, endY);
+        dG.fillStyle(0xf59e0b, 0.65);
+        dG.fillCircle(endX, endY, 2.5);
+      }
+    } else {
+      // MACHETE AIM: Directional Attack Cone (86px reach, 65 deg opening) clipped against walls
+      const reach = WEAPON_CONFIG.facao.reach;
+      const halfCone = WEAPON_CONFIG.facao.coneAngleRad * 0.5;
+      const raySteps = 16;
 
-    // Muzzle flash light burst when firing
+      // Check if a valid target is currently inside the machete cone
+      const hasTargetInCone = w.zombies.some((z) => {
+        if (z.dead) return false;
+        const dx = z.x - p.x;
+        const dy = z.y - p.y;
+        const dist = Math.hypot(dx, dy);
+        if (Math.max(0, dist - z.radius) > reach) return false;
+        const angleToZ = Math.atan2(dy, dx);
+        const diff = Math.abs(
+          ((angleToZ - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+        );
+        const allow = Math.atan2(z.radius * 0.75, Math.max(20, dist));
+        if (diff > halfCone + allow) return false;
+        return !isSegmentBlockedByWall(p.x, p.y, z.x, z.y, w.obstacles);
+      });
+
+      const coneColor = hasTargetInCone ? 0xef4444 : 0xd9822b;
+      const isSwinging = p.meleeSwingTimer > 0;
+      const fillAlpha = isSwinging ? 0.28 : hasTargetInCone ? 0.20 : 0.13;
+      const strokeAlpha = isSwinging ? 0.85 : hasTargetInCone ? 0.72 : 0.45;
+
+      dG.fillStyle(coneColor, fillAlpha);
+      dG.lineStyle(1.5, coneColor, strokeAlpha);
+      dG.beginPath();
+      dG.moveTo(p.x + pCos * 10, p.y + pSin * 10);
+
+      for (let i = 0; i <= raySteps; i++) {
+        const a = p.facingAngle - halfCone + (i / raySteps) * (halfCone * 2);
+        const rDist = getRayObstacleDistance(p.x, p.y, a, reach, w.obstacles, true);
+        dG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
+      }
+
+      dG.closePath();
+      dG.fillPath();
+      dG.strokePath();
+
+      // Active slash sweep during melee swing
+      if (isSwinging) {
+        const swingRatio = 1 - p.meleeSwingTimer / WEAPON_CONFIG.facao.swingDuration;
+        const sweepAngle = p.facingAngle - halfCone + swingRatio * (halfCone * 2);
+        const sweepDist = getRayObstacleDistance(p.x, p.y, sweepAngle, reach, w.obstacles, true);
+
+        dG.lineStyle(3.5, 0xf8fafc, 0.9 * (1 - swingRatio * 0.4));
+        dG.beginPath();
+        dG.arc(
+          p.x,
+          p.y,
+          Math.min(reach * 0.88, sweepDist),
+          p.facingAngle - halfCone,
+          sweepAngle,
+          false
+        );
+        dG.strokePath();
+      }
+    }
+
+    // Muzzle flash light burst when firing pistol
     if (this.shotFlashTimer > 0 && !this.bridge?.reducedEffects) {
       const mx = p.x + pCos * (p.radius + 16);
       const my = p.y + pSin * (p.radius + 16);
@@ -1073,21 +1304,6 @@ export class SurvivalActionScene extends Phaser.Scene {
       dG.fillCircle(mx, my, 18);
       dG.fillStyle(0xfef3c7, 0.85);
       dG.fillCircle(mx, my, 7);
-    }
-
-    // Melee cleave arc visual confirmation
-    if (p.meleeSwingTimer > 0) {
-      dG.lineStyle(4, 0xe2e8f0, (p.meleeSwingTimer / 0.2) * 0.85);
-      dG.beginPath();
-      dG.arc(
-        p.x,
-        p.y,
-        48,
-        p.facingAngle - 0.85,
-        p.facingAngle + 0.85,
-        false
-      );
-      dG.strokePath();
     }
 
     // Reloading progress ring around player
@@ -1126,10 +1342,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       dG.fillCircle(pt.x, pt.y, pt.size);
     }
 
-    // 7. Floating Combat / Loot Feedbacks
-    // (Rendered cleanly via Phaser graphics/text or HUD banner)
-
-    // Healing canalization progress arc and medical cross badge over player
+    // 7. Healing canalization progress arc and medical cross badge over player
     if (p.healing?.active) {
       const hProg = Math.min(1, p.healing.progress / p.healing.duration);
       dG.lineStyle(3, 0x10b981, 0.95);
@@ -1143,7 +1356,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       dG.fillRect(p.x - 6, crossY - 2, 12, 4);
     }
 
-    // 8. Atmospheric Darkness & Directional Flashlight Cone (Darkwood / Project Zomboid mood)
+    // 8. Balanced Atmospheric Darkness & Directional Flashlight Cone (Bullet Echo / Zomboid clarity)
     this.renderAtmosphericLighting(lG);
   }
 
@@ -1151,61 +1364,84 @@ export class SurvivalActionScene extends Phaser.Scene {
     const w = this.worldState;
     const p = w.player;
 
-    // 1. Full-screen ambient atmospheric darkness based on day/night cycle & building interior
-    const darknessAlpha = Math.min(0.85, Math.max(0.12, w.ambientDarkness));
-    lG.fillStyle(0x06080b, darknessAlpha);
-    lG.fillRect(0, 0, w.worldWidth, w.worldHeight);
+    // Keep maximum ambient darkness capped at 0.42 so walls, doors, furniture, cars, and zombies are always identifiable
+    const baseDarkness = Math.min(0.42, Math.max(0.10, w.ambientDarkness));
+    const flashlightActive = p.flashlight.enabled && p.flashlight.battery > 0;
+    const closeAuraRadius = flashlightActive ? 64 : 52;
+    const outerCoverRadius = 1500;
 
-    // 2. Flashlight or Lantern beam cutting through darkness
-    if (p.flashlight.enabled && p.flashlight.battery > 0) {
+    if (flashlightActive) {
       const beamLength = p.flashlight.range;
       const halfCone = p.flashlight.coneAngle * 0.5;
       const a1 = p.facingAngle - halfCone;
       const a2 = p.facingAngle + halfCone;
 
-      // Outer warm tungsten cone
-      lG.fillStyle(0xfde68a, 0.28);
+      // 1a. Peripheral shadow outside the flashlight cone & outside the close survivor aura
+      lG.fillStyle(0x06080b, Math.min(0.48, baseDarkness + 0.06));
       lG.beginPath();
-      lG.moveTo(p.x, p.y);
-      lG.arc(p.x, p.y, beamLength, a1, a2, false);
+      lG.arc(p.x, p.y, outerCoverRadius, a2, a1 + Math.PI * 2, false);
+      lG.arc(p.x, p.y, closeAuraRadius, a1 + Math.PI * 2, a2, true);
       lG.closePath();
       lG.fillPath();
 
-      // Focused inner high-intensity core
-      lG.fillStyle(0xfffbeb, 0.35);
+      // 1b. Shadow beyond the flashlight's reach inside the forward sector
+      lG.fillStyle(0x06080b, Math.min(0.48, baseDarkness + 0.06));
       lG.beginPath();
-      lG.moveTo(p.x, p.y);
-      lG.arc(
-        p.x,
-        p.y,
-        beamLength * 0.75,
-        p.facingAngle - halfCone * 0.55,
-        p.facingAngle + halfCone * 0.55,
-        false
-      );
+      lG.arc(p.x, p.y, outerCoverRadius, a1, a2, false);
+      lG.arc(p.x, p.y, beamLength, a2, a1, true);
       lG.closePath();
       lG.fillPath();
 
-      // Center bright needle
-      lG.fillStyle(0xffffff, 0.25);
+      // 2. Wall-clipped directional warm tungsten flashlight beam
+      const raySteps = 18;
+      lG.fillStyle(0xfef3c7, 0.16);
+      lG.lineStyle(1.2, 0xfde68a, 0.28);
       lG.beginPath();
       lG.moveTo(p.x, p.y);
-      lG.arc(p.x, p.y, beamLength * 0.45, p.facingAngle - 0.15, p.facingAngle + 0.15, false);
+      for (let i = 0; i <= raySteps; i++) {
+        const ra = a1 + (i / raySteps) * (halfCone * 2);
+        const rDist = getRayObstacleDistance(p.x, p.y, ra, beamLength, w.obstacles, true);
+        lG.lineTo(p.x + Math.cos(ra) * rDist, p.y + Math.sin(ra) * rDist);
+      }
+      lG.closePath();
+      lG.fillPath();
+      lG.strokePath();
+
+      // Focused center beam highlight
+      const coreHalf = halfCone * 0.45;
+      lG.fillStyle(0xffffff, 0.12);
+      lG.beginPath();
+      lG.moveTo(p.x, p.y);
+      for (let i = 0; i <= 8; i++) {
+        const ra = p.facingAngle - coreHalf + (i / 8) * (coreHalf * 2);
+        const rDist = getRayObstacleDistance(p.x, p.y, ra, beamLength * 0.72, w.obstacles, true);
+        lG.lineTo(p.x + Math.cos(ra) * rDist, p.y + Math.sin(ra) * rDist);
+      }
       lG.closePath();
       lG.fillPath();
 
-      // Close 360-degree survivor body lantern illumination
-      lG.fillStyle(0xfbbf24, 0.2);
-      lG.fillCircle(p.x, p.y, 75);
+      // Close 360-degree lantern glow around survivor
+      lG.fillStyle(0xfde68a, 0.10);
+      lG.fillCircle(p.x, p.y, closeAuraRadius);
     } else {
-      // When flashlight is off / dead: pitch-black claustrophobic survival aura
-      lG.fillStyle(0xd97706, 0.08);
-      lG.fillCircle(p.x, p.y, 45);
+      // Flashlight OFF: uniform navigable night shadow outside the survivor's close personal aura
+      lG.fillStyle(0x06080b, baseDarkness);
+      lG.beginPath();
+      lG.arc(p.x, p.y, outerCoverRadius, 0, Math.PI * 2, false);
+      lG.arc(p.x, p.y, closeAuraRadius, Math.PI * 2, 0, true);
+      lG.closePath();
+      lG.fillPath();
+
+      // Subtle close-range visibility ring so player is never lost in the dark
+      lG.fillStyle(0x06080b, baseDarkness * 0.45);
+      lG.fillCircle(p.x, p.y, closeAuraRadius);
+      lG.lineStyle(1, 0x94a3b8, 0.14);
+      lG.strokeCircle(p.x, p.y, closeAuraRadius);
     }
 
-    // 3. Extraction Gate emergency flare & guide light
+    // 3. Extraction Gate emergency beacon light
     const pulse = 0.5 + 0.5 * Math.sin(w.elapsedTime * 3.5);
-    lG.fillStyle(0x10b981, 0.18 + pulse * 0.12);
-    lG.fillCircle(w.extractionZone.x, w.extractionZone.y, w.extractionZone.radius * 1.5);
+    lG.fillStyle(0x10b981, 0.14 + pulse * 0.10);
+    lG.fillCircle(w.extractionZone.x, w.extractionZone.y, w.extractionZone.radius * 1.35);
   }
 }
