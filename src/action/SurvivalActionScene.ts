@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import {
   createDefaultInputState,
+  findInteractableAtWorldPoint,
   getRayObstacleDistance,
   isSegmentBlockedByWall,
   stepWorld,
@@ -42,6 +43,7 @@ export interface ExternalControlBridge {
   queuedHeal: boolean;
   queuedToggleFlashlight: boolean;
   reducedEffects: boolean;
+  tryInteractAtScreenPoint?: (clientX: number, clientY: number) => boolean;
 }
 
 export function createExternalControlBridge(): ExternalControlBridge {
@@ -72,6 +74,8 @@ export class SurvivalActionScene extends Phaser.Scene {
   private decalGraphics!: Phaser.GameObjects.Graphics;
   private shadowGraphics!: Phaser.GameObjects.Graphics;
   private dynamicGraphics!: Phaser.GameObjects.Graphics;
+  private roofGraphics!: Phaser.GameObjects.Graphics;
+  private aimGraphics!: Phaser.GameObjects.Graphics;
   private lightingGraphics!: Phaser.GameObjects.Graphics;
   private staticLayerGroup!: Phaser.GameObjects.Group;
   private lootSpriteMap = new Map<string, Phaser.GameObjects.Sprite>();
@@ -123,6 +127,28 @@ export class SurvivalActionScene extends Phaser.Scene {
     }
   }
 
+  public tryInteractAtScreenPoint(clientX: number, clientY: number): boolean {
+    if (!this.worldState || !this.cameras?.main || !this.sys?.game?.canvas) {
+      return false;
+    }
+    const canvas = this.sys.game.canvas;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    const scaleX = this.scale.width / rect.width;
+    const scaleY = this.scale.height / rect.height;
+    const canvasX = (clientX - rect.left) * scaleX;
+    const canvasY = (clientY - rect.top) * scaleY;
+    const worldPoint = this.cameras.main.getWorldPoint(canvasX, canvasY);
+
+    const hit = findInteractableAtWorldPoint(this.worldState, worldPoint.x, worldPoint.y);
+    if (hit) {
+      this.bridge.queuedInteract = true;
+      return true;
+    }
+    return false;
+  }
+
   public bindRuntime(
     world: ActionWorldState,
     bridge: ExternalControlBridge,
@@ -131,6 +157,8 @@ export class SurvivalActionScene extends Phaser.Scene {
   ): void {
     this.worldState = world;
     this.bridge = bridge;
+    this.bridge.tryInteractAtScreenPoint = (clientX: number, clientY: number) =>
+      this.tryInteractAtScreenPoint(clientX, clientY);
     this.onHudSync = onHudSync;
     this.isPausedRef = isPausedRef;
     this.prevShotsFired = world.shotsFired;
@@ -196,6 +224,8 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.decalGraphics = this.add.graphics().setDepth(4);
     this.shadowGraphics = this.add.graphics().setDepth(8);
     this.dynamicGraphics = this.add.graphics().setDepth(22);
+    this.roofGraphics = this.add.graphics().setDepth(25);
+    this.aimGraphics = this.add.graphics().setDepth(28);
     this.lightingGraphics = this.add.graphics().setDepth(35);
 
     this.buildStaticEnvironment();
@@ -211,26 +241,14 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-      const p = this.worldState.player;
 
-      // Check if tapping directly on an eligible contextual object or extraction gate
-      const tappedLoot = this.worldState.lootSpots.find(
-        (s) =>
-          !s.looted &&
-          Math.hypot(worldPoint.x - s.x, worldPoint.y - s.y) <= s.radius + 36 &&
-          Math.hypot(s.x - p.x, s.y - p.y) <= s.radius + p.radius + 28 &&
-          !isSegmentBlockedByWall(p.x, p.y, s.x, s.y, this.worldState.obstacles)
+      // Check if tapping directly on an eligible contextual object (including car/furniture body) or extraction gate
+      const hitInteractable = findInteractableAtWorldPoint(
+        this.worldState,
+        worldPoint.x,
+        worldPoint.y
       );
-      if (tappedLoot) {
-        this.bridge.queuedInteract = true;
-        return;
-      }
-
-      const ext = this.worldState.extractionZone;
-      if (
-        Math.hypot(worldPoint.x - ext.x, worldPoint.y - ext.y) <= ext.radius + 24 &&
-        Math.hypot(ext.x - p.x, ext.y - p.y) <= ext.radius + p.radius + 16
-      ) {
+      if (hitInteractable) {
         this.bridge.queuedInteract = true;
         return;
       }
@@ -1066,14 +1084,92 @@ export class SurvivalActionScene extends Phaser.Scene {
     }
   }
 
+  private renderBuildingRoofs(rG: Phaser.GameObjects.Graphics): void {
+    const w = this.worldState;
+    for (const bld of w.buildings) {
+      const alpha =
+        bld.roofAlpha ?? (w.player.isInsideBuilding === bld.id ? 0.0 : 1.0);
+      if (alpha <= 0.01) continue;
+
+      const rx = bld.x;
+      const ry = bld.y;
+      const rw = bld.width;
+      const rh = bld.height;
+
+      // Choose weathered architectural roof palette based on building type
+      const isResidential = bld.id.includes('casa');
+      const isMedical = bld.id.includes('farmacia') || bld.id.includes('pronto') || bld.id.includes('necroterio');
+      const baseColor = isResidential ? 0x422b21 : isMedical ? 0x263238 : 0x2f2c28;
+      const northSlopeColor = isResidential ? 0x4f3428 : isMedical ? 0x2f3e46 : 0x383430;
+      const southSlopeColor = isResidential ? 0x332119 : isMedical ? 0x1c262b : 0x24211e;
+      const ridgeColor = isResidential ? 0x694636 : isMedical ? 0x475569 : 0x524c46;
+
+      // 1. Opaque interior mask so furniture, floors, and zombies inside are concealed when outside
+      rG.fillStyle(baseColor, alpha);
+      rG.fillRect(rx + 4, ry + 4, rw - 8, rh - 8);
+
+      // 2. Pitched Top-Down Roof Planes (North & South slopes)
+      const midY = ry + rh * 0.5;
+      const inset = 6;
+      rG.fillStyle(northSlopeColor, alpha);
+      rG.fillRect(rx + inset, ry + inset, rw - inset * 2, rh * 0.5 - inset);
+
+      rG.fillStyle(southSlopeColor, alpha);
+      rG.fillRect(rx + inset, midY, rw - inset * 2, rh * 0.5 - inset);
+
+      // 3. Corrugated Shingle / Metal Seam Ribs across the roof
+      rG.lineStyle(1, 0x14110f, alpha * 0.42);
+      const ribStep = isResidential ? 24 : 32;
+      for (let x = rx + inset + ribStep; x < rx + rw - inset; x += ribStep) {
+        rG.lineBetween(x, ry + inset, x, ry + rh - inset);
+      }
+
+      // Horizontal shingle overlap lines
+      const hStep = isResidential ? 28 : 42;
+      for (let y = ry + inset + hStep; y < ry + rh - inset; y += hStep) {
+        rG.lineBetween(rx + inset, y, rx + rw - inset, y);
+      }
+
+      // 4. Gabled East/West Hips & Central Roof Ridge Beam
+      const ridgeInset = Math.min(68, rw * 0.18);
+      rG.lineStyle(2.5, ridgeColor, alpha * 0.9);
+      rG.lineBetween(rx + ridgeInset, midY, rx + rw - ridgeInset, midY);
+      rG.lineStyle(1.8, ridgeColor, alpha * 0.75);
+      rG.lineBetween(rx + inset, ry + inset, rx + ridgeInset, midY);
+      rG.lineBetween(rx + inset, ry + rh - inset, rx + ridgeInset, midY);
+      rG.lineBetween(rx + rw - inset, ry + inset, rx + rw - ridgeInset, midY);
+      rG.lineBetween(rx + rw - inset, ry + rh - inset, rx + rw - ridgeInset, midY);
+
+      // 5. Rooftop HVAC / Vent / Skylight Detail
+      const ventX = rx + rw * 0.66;
+      const ventY = midY - 22;
+      rG.fillStyle(0x1c1917, alpha * 0.9);
+      rG.fillRect(ventX, ventY, 36, 26);
+      rG.lineStyle(1.5, 0x57534e, alpha * 0.85);
+      rG.strokeRect(ventX, ventY, 36, 26);
+      rG.lineBetween(ventX + 6, ventY + 8, ventX + 30, ventY + 8);
+      rG.lineBetween(ventX + 6, ventY + 16, ventX + 30, ventY + 16);
+
+      // 6. Roof Eave Perimeter Border
+      rG.lineStyle(2, 0x0f0d0b, alpha * 0.95);
+      rG.strokeRect(rx + 4, ry + 4, rw - 8, rh - 8);
+      rG.lineStyle(1, ridgeColor, alpha * 0.55);
+      rG.strokeRect(rx + 6, ry + 6, rw - 12, rh - 12);
+    }
+  }
+
   private renderDynamicEntities(dt: number): void {
     this.syncEntitySprites();
 
     const sG = this.shadowGraphics;
     const dG = this.dynamicGraphics;
+    const rG = this.roofGraphics;
+    const aG = this.aimGraphics;
     const lG = this.lightingGraphics;
     sG.clear();
     dG.clear();
+    rG.clear();
+    aG.clear();
     lG.clear();
 
     const w = this.worldState;
@@ -1093,9 +1189,9 @@ export class SurvivalActionScene extends Phaser.Scene {
 
       if (isBeingLooted && w.activeLooting) {
         const progress = Math.min(1, w.activeLooting.progress / w.activeLooting.duration);
-        dG.lineStyle(2.5, 0x10b981, 0.9);
-        dG.beginPath();
-        dG.arc(
+        aG.lineStyle(2.5, 0x10b981, 0.9);
+        aG.beginPath();
+        aG.arc(
           p.x,
           p.y,
           p.radius + 13,
@@ -1103,7 +1199,7 @@ export class SurvivalActionScene extends Phaser.Scene {
           -Math.PI / 2 + progress * Math.PI * 2,
           false
         );
-        dG.strokePath();
+        aG.strokePath();
       }
     }
 
@@ -1111,15 +1207,23 @@ export class SurvivalActionScene extends Phaser.Scene {
     for (const ne of w.noiseEvents) {
       const lifeFraction = Math.max(0, ne.timer / ne.duration);
       const currentRadius = ne.radius * (1 - lifeFraction);
-      const alpha = lifeFraction * (ne.source === 'gunshot' ? 0.45 : 0.25);
+      const alpha = lifeFraction * (ne.source === 'gunshot' ? 0.45 : 0.28);
       const ringColor =
-        ne.source === 'gunshot' ? 0xf59e0b : ne.source === 'sprint' ? 0x94a3b8 : 0x52b788;
+        ne.source === 'gunshot'
+          ? 0xf59e0b
+          : ne.source === 'melee'
+          ? 0xe09132
+          : ne.source === 'sprint'
+          ? 0x94a3b8
+          : 0x52b788;
 
       dG.lineStyle(1.8, ringColor, alpha);
       dG.strokeCircle(ne.x, ne.y, currentRadius);
     }
 
-    // 3. Update Zombie Pixel-Art Sprites, Shadows, Windup Telegraphs & Health Bars
+    const engagedSet = new Set(p.engagedTargetIds ?? []);
+
+    // 3. Update Zombie Pixel-Art Sprites, Shadows, Windup Telegraphs, Health Bars & Bullet Echo Engagement Highlights
     for (const z of w.zombies) {
       const spr = this.zombieSpriteMap.get(z.id);
       if (spr) {
@@ -1140,6 +1244,27 @@ export class SurvivalActionScene extends Phaser.Scene {
         // Ground contact shadow under living zombie
         sG.fillStyle(0x050404, 0.62);
         sG.fillEllipse(z.x + 2, z.y + 4, z.radius * 1.9, z.radius * 1.45);
+
+        // Bullet Echo Target Engagement Highlight when zombie is inside valid attack cone
+        if (engagedSet.has(z.id)) {
+          const isPrimary = p.engagedTargetId === z.id;
+          const ringR = z.radius + (isPrimary ? 7 : 5);
+          const engColor = isPrimary ? 0xef4444 : 0xf97316;
+
+          dG.fillStyle(engColor, isPrimary ? 0.16 : 0.10);
+          dG.fillCircle(z.x, z.y, ringR);
+          dG.lineStyle(isPrimary ? 2.0 : 1.5, engColor, 0.85);
+          dG.strokeCircle(z.x, z.y, ringR);
+
+          // 4 tactical corner bracket ticks around engaged target
+          const bracketR = ringR + 3;
+          for (let bIdx = 0; bIdx < 4; bIdx++) {
+            const baseA = bIdx * (Math.PI * 0.5) + Math.PI * 0.25;
+            dG.beginPath();
+            dG.arc(z.x, z.y, bracketR, baseA - 0.24, baseA + 0.24, false);
+            dG.strokePath();
+          }
+        }
 
         // Attack windup danger telegraph
         if (z.isWindingUp) {
@@ -1162,7 +1287,10 @@ export class SurvivalActionScene extends Phaser.Scene {
       }
     }
 
-    // 4. Update Protagonist Pixel-Art Sprite, Walk/Run Cadence, Shadows & Weapon Sight
+    // 3b. Render Building Roofs (depth 25: conceals interior when outside, fades smoothly when entering)
+    this.renderBuildingRoofs(rG);
+
+    // 4. Update Protagonist Pixel-Art Sprite, Walk/Run Cadence, Shadows & Bullet Echo Dynamic Aim Funnel
     const speed = Math.hypot(p.vx, p.vy);
     if (speed > 10) {
       this.walkAnimTime += dt * (p.sprinting ? 12.5 : 8.5);
@@ -1212,12 +1340,73 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     const pCos = Math.cos(p.facingAngle);
     const pSin = Math.sin(p.facingAngle);
+    const hasTargetInCone = engagedSet.size > 0;
 
-    // --- WEAPON-SPECIFIC DIRECTIONAL AIM REPRESENTATION ---
+    // --- BULLET ECHO DYNAMIC DIRECTIONAL AIM FUNNEL / CONE ---
     if (!isMachete) {
-      // PISTOL AIM: Crisp directional firearm line clipped against walls
-      const maxSight = WEAPON_CONFIG.pistola.sightRange;
-      const clippedSight = getRayObstacleDistance(
+      // PISTOL AIM: Dynamic Bullet Echo funnel (widens while moving, narrows smoothly when stationary)
+      const cfg = WEAPON_CONFIG.pistola;
+      const maxSight = cfg.sightRange;
+      const currentSpread = p.aimSpreadRad ?? cfg.minConeAngleRad;
+      const halfCone = currentSpread * 0.5;
+      const focusFactor =
+        1 -
+        Math.max(
+          0,
+          Math.min(
+            1,
+            (currentSpread - cfg.minConeAngleRad) /
+              Math.max(0.001, cfg.maxConeAngleRad - cfg.minConeAngleRad)
+          )
+        );
+
+      const raySteps = 20;
+      const coneColor = hasTargetInCone ? 0xef4444 : 0xf59e0b;
+      const edgeColor = hasTargetInCone ? 0xf87171 : 0xfbbf24;
+      const fillAlpha = hasTargetInCone
+        ? 0.14 + focusFactor * 0.08
+        : 0.08 + focusFactor * 0.07;
+      const strokeAlpha = hasTargetInCone
+        ? 0.78 + focusFactor * 0.18
+        : 0.45 + focusFactor * 0.35;
+
+      const originX = p.x + pCos * 10;
+      const originY = p.y + pSin * 10;
+
+      // 1. Wall-clipped translucent Bullet Echo funnel body
+      aG.fillStyle(coneColor, fillAlpha);
+      aG.beginPath();
+      aG.moveTo(originX, originY);
+      for (let i = 0; i <= raySteps; i++) {
+        const a = p.facingAngle - halfCone + (i / raySteps) * (halfCone * 2);
+        const rDist = getRayObstacleDistance(p.x, p.y, a, maxSight, w.obstacles, true);
+        aG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
+      }
+      aG.closePath();
+      aG.fillPath();
+
+      // 2. Crisp Left & Right Funnel Boundary Rays
+      const leftAngle = p.facingAngle - halfCone;
+      const rightAngle = p.facingAngle + halfCone;
+      const leftDist = getRayObstacleDistance(p.x, p.y, leftAngle, maxSight, w.obstacles, true);
+      const rightDist = getRayObstacleDistance(p.x, p.y, rightAngle, maxSight, w.obstacles, true);
+
+      aG.lineStyle(1.9, edgeColor, strokeAlpha);
+      aG.lineBetween(
+        originX,
+        originY,
+        p.x + Math.cos(leftAngle) * leftDist,
+        p.y + Math.sin(leftAngle) * leftDist
+      );
+      aG.lineBetween(
+        originX,
+        originY,
+        p.x + Math.cos(rightAngle) * rightDist,
+        p.y + Math.sin(rightAngle) * rightDist
+      );
+
+      // 3. Outer range arc & mid-range tactical arc (Bullet Echo signature cone arcs)
+      const centerDist = getRayObstacleDistance(
         p.x,
         p.y,
         p.facingAngle,
@@ -1225,14 +1414,30 @@ export class SurvivalActionScene extends Phaser.Scene {
         w.obstacles,
         true
       );
-      const startDist = p.radius + 10;
-      if (clippedSight > startDist) {
-        const endX = p.x + pCos * clippedSight;
-        const endY = p.y + pSin * clippedSight;
-        dG.lineStyle(1.5, 0xf59e0b, 0.38);
-        dG.lineBetween(p.x + pCos * startDist, p.y + pSin * startDist, endX, endY);
-        dG.fillStyle(0xf59e0b, 0.65);
-        dG.fillCircle(endX, endY, 2.5);
+      const outerArcR = Math.min(maxSight, centerDist, leftDist, rightDist);
+      if (outerArcR > 40) {
+        aG.lineStyle(1.4, edgeColor, strokeAlpha * 0.72);
+        aG.beginPath();
+        aG.arc(p.x, p.y, outerArcR, leftAngle, rightAngle, false);
+        aG.strokePath();
+      }
+      const midArcR = outerArcR * 0.55;
+      if (midArcR > 32) {
+        aG.lineStyle(1.0, edgeColor, strokeAlpha * 0.35);
+        aG.beginPath();
+        aG.arc(p.x, p.y, midArcR, leftAngle, rightAngle, false);
+        aG.strokePath();
+      }
+
+      // 4. Center Focus Guideline (brightens as cone narrows when steady)
+      if (centerDist > p.radius + 14) {
+        aG.lineStyle(1.2, edgeColor, 0.22 + focusFactor * 0.45);
+        aG.lineBetween(
+          p.x + pCos * (p.radius + 12),
+          p.y + pSin * (p.radius + 12),
+          p.x + pCos * centerDist,
+          p.y + pSin * centerDist
+        );
       }
     } else {
       // MACHETE AIM: Directional Attack Cone (86px reach, 65 deg opening) clipped against walls
@@ -1240,41 +1445,25 @@ export class SurvivalActionScene extends Phaser.Scene {
       const halfCone = WEAPON_CONFIG.facao.coneAngleRad * 0.5;
       const raySteps = 16;
 
-      // Check if a valid target is currently inside the machete cone
-      const hasTargetInCone = w.zombies.some((z) => {
-        if (z.dead) return false;
-        const dx = z.x - p.x;
-        const dy = z.y - p.y;
-        const dist = Math.hypot(dx, dy);
-        if (Math.max(0, dist - z.radius) > reach) return false;
-        const angleToZ = Math.atan2(dy, dx);
-        const diff = Math.abs(
-          ((angleToZ - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
-        );
-        const allow = Math.atan2(z.radius * 0.75, Math.max(20, dist));
-        if (diff > halfCone + allow) return false;
-        return !isSegmentBlockedByWall(p.x, p.y, z.x, z.y, w.obstacles);
-      });
-
       const coneColor = hasTargetInCone ? 0xef4444 : 0xd9822b;
       const isSwinging = p.meleeSwingTimer > 0;
-      const fillAlpha = isSwinging ? 0.28 : hasTargetInCone ? 0.20 : 0.13;
-      const strokeAlpha = isSwinging ? 0.85 : hasTargetInCone ? 0.72 : 0.45;
+      const fillAlpha = isSwinging ? 0.28 : hasTargetInCone ? 0.22 : 0.14;
+      const strokeAlpha = isSwinging ? 0.88 : hasTargetInCone ? 0.78 : 0.50;
 
-      dG.fillStyle(coneColor, fillAlpha);
-      dG.lineStyle(1.5, coneColor, strokeAlpha);
-      dG.beginPath();
-      dG.moveTo(p.x + pCos * 10, p.y + pSin * 10);
+      aG.fillStyle(coneColor, fillAlpha);
+      aG.lineStyle(1.7, coneColor, strokeAlpha);
+      aG.beginPath();
+      aG.moveTo(p.x + pCos * 10, p.y + pSin * 10);
 
       for (let i = 0; i <= raySteps; i++) {
         const a = p.facingAngle - halfCone + (i / raySteps) * (halfCone * 2);
         const rDist = getRayObstacleDistance(p.x, p.y, a, reach, w.obstacles, true);
-        dG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
+        aG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
       }
 
-      dG.closePath();
-      dG.fillPath();
-      dG.strokePath();
+      aG.closePath();
+      aG.fillPath();
+      aG.strokePath();
 
       // Active slash sweep during melee swing
       if (isSwinging) {
@@ -1282,9 +1471,9 @@ export class SurvivalActionScene extends Phaser.Scene {
         const sweepAngle = p.facingAngle - halfCone + swingRatio * (halfCone * 2);
         const sweepDist = getRayObstacleDistance(p.x, p.y, sweepAngle, reach, w.obstacles, true);
 
-        dG.lineStyle(3.5, 0xf8fafc, 0.9 * (1 - swingRatio * 0.4));
-        dG.beginPath();
-        dG.arc(
+        aG.lineStyle(3.5, 0xf8fafc, 0.9 * (1 - swingRatio * 0.4));
+        aG.beginPath();
+        aG.arc(
           p.x,
           p.y,
           Math.min(reach * 0.88, sweepDist),
@@ -1292,7 +1481,7 @@ export class SurvivalActionScene extends Phaser.Scene {
           sweepAngle,
           false
         );
-        dG.strokePath();
+        aG.strokePath();
       }
     }
 
@@ -1300,18 +1489,18 @@ export class SurvivalActionScene extends Phaser.Scene {
     if (this.shotFlashTimer > 0 && !this.bridge?.reducedEffects) {
       const mx = p.x + pCos * (p.radius + 16);
       const my = p.y + pSin * (p.radius + 16);
-      dG.fillStyle(0xf59e0b, 0.45);
-      dG.fillCircle(mx, my, 18);
-      dG.fillStyle(0xfef3c7, 0.85);
-      dG.fillCircle(mx, my, 7);
+      aG.fillStyle(0xf59e0b, 0.45);
+      aG.fillCircle(mx, my, 18);
+      aG.fillStyle(0xfef3c7, 0.85);
+      aG.fillCircle(mx, my, 7);
     }
 
     // Reloading progress ring around player
     if (p.reloadTimer > 0) {
       const progress = 1 - p.reloadTimer / p.reloadDuration;
-      dG.lineStyle(2.5, 0xd9822b, 0.9);
-      dG.beginPath();
-      dG.arc(
+      aG.lineStyle(2.5, 0xd9822b, 0.9);
+      aG.beginPath();
+      aG.arc(
         p.x,
         p.y,
         p.radius + 9,
@@ -1319,7 +1508,7 @@ export class SurvivalActionScene extends Phaser.Scene {
         -Math.PI / 2 + progress * Math.PI * 2,
         false
       );
-      dG.strokePath();
+      aG.strokePath();
     }
 
     // 5. Active Bullets with high-velocity tracer tail
@@ -1328,32 +1517,32 @@ export class SurvivalActionScene extends Phaser.Scene {
       const bMag = Math.hypot(b.vx, b.vy) || 1;
       const tailX = b.x - (b.vx / bMag) * 14;
       const tailY = b.y - (b.vy / bMag) * 14;
-      dG.lineStyle(2, 0xf59e0b, 0.55);
-      dG.lineBetween(tailX, tailY, b.x, b.y);
-      dG.fillStyle(0xfef3c7, 1);
-      dG.fillCircle(b.x, b.y, 2.5);
+      aG.lineStyle(2, 0xf59e0b, 0.55);
+      aG.lineBetween(tailX, tailY, b.x, b.y);
+      aG.fillStyle(0xfef3c7, 1);
+      aG.fillCircle(b.x, b.y, 2.5);
     }
 
     // 6. Pooled Particles (Blood droplets, sparks, shell casings)
     for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
       const pt = this.particlePool[i];
       if (!pt.active) continue;
-      dG.fillStyle(pt.color, Math.max(0, pt.life / pt.maxLife));
-      dG.fillCircle(pt.x, pt.y, pt.size);
+      aG.fillStyle(pt.color, Math.max(0, pt.life / pt.maxLife));
+      aG.fillCircle(pt.x, pt.y, pt.size);
     }
 
     // 7. Healing canalization progress arc and medical cross badge over player
     if (p.healing?.active) {
       const hProg = Math.min(1, p.healing.progress / p.healing.duration);
-      dG.lineStyle(3, 0x10b981, 0.95);
-      dG.beginPath();
-      dG.arc(p.x, p.y, p.radius + 18, -Math.PI / 2, -Math.PI / 2 + hProg * Math.PI * 2, false);
-      dG.strokePath();
+      aG.lineStyle(3, 0x10b981, 0.95);
+      aG.beginPath();
+      aG.arc(p.x, p.y, p.radius + 18, -Math.PI / 2, -Math.PI / 2 + hProg * Math.PI * 2, false);
+      aG.strokePath();
 
       const crossY = p.y - p.radius - 22;
-      dG.fillStyle(0x10b981, 0.95);
-      dG.fillRect(p.x - 2, crossY - 6, 4, 12);
-      dG.fillRect(p.x - 6, crossY - 2, 12, 4);
+      aG.fillStyle(0x10b981, 0.95);
+      aG.fillRect(p.x - 2, crossY - 6, 4, 12);
+      aG.fillRect(p.x - 6, crossY - 2, 12, 4);
     }
 
     // 8. Balanced Atmospheric Darkness & Directional Flashlight Cone (Bullet Echo / Zomboid clarity)

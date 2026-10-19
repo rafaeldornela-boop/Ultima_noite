@@ -55,6 +55,7 @@ export function createInitialPersistentStash(): PersistentShelterStash {
 export interface ZombieArchetypeStats {
   name: string;
   radius: number;
+  turnRateRad: number;
   visionConeAngle: number;
   visionRange: number;
   hp: number;
@@ -71,6 +72,7 @@ export const ZOMBIE_ARCHETYPE_CONFIG: Record<ZombieArchetype, ZombieArchetypeSta
   lento: {
     name: 'Errante Comum',
     radius: 16,
+    turnRateRad: 5.2, // Natural deliberate rotation speed (rad/s)
     visionConeAngle: 1.35, // ~77 degrees
     visionRange: 230,
     hp: 45,
@@ -85,6 +87,7 @@ export const ZOMBIE_ARCHETYPE_CONFIG: Record<ZombieArchetype, ZombieArchetypeSta
   corredor: {
     name: 'Corredor Infectado',
     radius: 14,
+    turnRateRad: 9.5, // Agile runner rotation speed (rad/s)
     visionConeAngle: 1.5, // ~86 degrees
     visionRange: 260,
     hp: 30,
@@ -98,6 +101,7 @@ export const ZOMBIE_ARCHETYPE_CONFIG: Record<ZombieArchetype, ZombieArchetypeSta
   bruto: {
     name: 'Bruto Blindado',
     radius: 22,
+    turnRateRad: 3.4, // Heavy armored rotation speed (rad/s)
     visionConeAngle: 1.2, // ~68 degrees
     visionRange: 210,
     hp: 120,
@@ -117,15 +121,21 @@ export const WEAPON_CONFIG = {
     bulletSpeed: 680,
     sightRange: 260,
     noiseRadius: 480,
+    minConeAngleRad: (12 * Math.PI) / 180, // 12 deg focused cone when stationary & steady
+    moveConeAngleRad: (36 * Math.PI) / 180, // 36 deg wider cone while moving
+    maxConeAngleRad: (46 * Math.PI) / 180, // 46 deg max cone when sprinting / firing bloom
+    shotBloomRad: (8 * Math.PI) / 180, // Recoil bloom per shot
+    focusSpeed: 3.2, // Smooth narrowing rate when stopped
+    widenSpeed: 7.5, // Responsive opening rate when moving
   },
   facao: {
     reach: 86, // 70..100 px world range
     coneAngleRad: (65 * Math.PI) / 180, // 65 deg total opening (within 55..75 deg)
-    damage: 30,
+    damage: 38, // Standardized 38 PV per hit (single target per swing)
     cooldown: 0.44, // Distinct recovery interval between swings
     swingDuration: 0.22,
     knockback: 220,
-    noiseRadius: 0, // Silent melee weapon
+    noiseRadius: 95, // Effective 95 px low-radius melee sound
   },
 } as const;
 
@@ -153,6 +163,7 @@ export function createZombieFromArchetype(
     vy: 0,
     radius: cfg.radius,
     facingAngle: 0,
+    turnRateRad: cfg.turnRateRad,
     visionConeAngle: cfg.visionConeAngle,
     visionRange: cfg.visionRange,
     alertState: 'idle',
@@ -211,6 +222,9 @@ export function createInitialWorldState(
       vy: 0,
       radius: 16,
       facingAngle: -Math.PI / 4, // Facing NE into the street
+      aimSpreadRad: WEAPON_CONFIG.pistola.minConeAngleRad,
+      engagedTargetId: null,
+      engagedTargetIds: [],
       hp: 100,
       maxHp: 100,
       stamina: 100,
@@ -250,7 +264,11 @@ export function createInitialWorldState(
       contents: { ...l.contents },
     })),
     obstacles: def.obstacles.map((o) => ({ ...o })),
-    buildings: def.buildings.map((b) => ({ ...b })),
+    buildings: def.buildings.map((b) => ({
+      ...b,
+      roofColor: b.roofColor ?? 0x3b2d24,
+      roofAlpha: 1.0,
+    })),
     extractionZone: { ...def.extractionZone },
     runLoot: {
       comida: 0,
@@ -647,6 +665,54 @@ export function finishReloadIfReady(world: ActionWorldState, dt: number): boolea
   return false;
 }
 
+export function getCurrentAimConeAngle(world: ActionWorldState): number {
+  const p = world.player;
+  if (p.equippedWeapon === 'facao') {
+    return WEAPON_CONFIG.facao.coneAngleRad;
+  }
+  return p.aimSpreadRad ?? WEAPON_CONFIG.pistola.minConeAngleRad;
+}
+
+export function updateEngagedTargets(world: ActionWorldState): void {
+  const p = world.player;
+  const isMachete = p.equippedWeapon === 'facao';
+  const maxRange = isMachete ? WEAPON_CONFIG.facao.reach : WEAPON_CONFIG.pistola.sightRange;
+  const coneAngle = getCurrentAimConeAngle(world);
+  const halfCone = coneAngle * 0.5;
+
+  const engagedIds: string[] = [];
+  let bestTargetId: string | null = null;
+  let bestScore = Infinity;
+
+  for (const z of world.zombies) {
+    if (z.dead) continue;
+    const dx = z.x - p.x;
+    const dy = z.y - p.y;
+    const dist = Math.hypot(dx, dy);
+    const edgeDist = Math.max(0, dist - z.radius);
+    if (edgeDist > maxRange) continue;
+
+    const angleToZombie = Math.atan2(dy, dx);
+    const angleDiff = Math.abs(
+      ((angleToZombie - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+    );
+    const bodyAngularAllowance = Math.atan2(z.radius * 0.75, Math.max(20, dist));
+    if (angleDiff > halfCone + bodyAngularAllowance) continue;
+
+    if (isSegmentBlockedByWall(p.x, p.y, z.x, z.y, world.obstacles)) continue;
+
+    engagedIds.push(z.id);
+    const score = edgeDist + angleDiff * 40;
+    if (score < bestScore) {
+      bestScore = score;
+      bestTargetId = z.id;
+    }
+  }
+
+  p.engagedTargetIds = engagedIds;
+  p.engagedTargetId = bestTargetId;
+}
+
 export function performAttack(world: ActionWorldState): {
   type: 'shot' | 'melee' | 'empty' | 'cooldown';
   hits: number;
@@ -672,7 +738,32 @@ export function performAttack(world: ActionWorldState): {
     p.attackCooldown = WEAPON_CONFIG.pistola.cooldown;
     world.shotsFired += 1;
 
-    const bulletSpeed = WEAPON_CONFIG.pistola.bulletSpeed;
+    const cfg = WEAPON_CONFIG.pistola;
+    const currentSpread = Math.max(
+      cfg.minConeAngleRad,
+      Math.min(cfg.maxConeAngleRad, p.aimSpreadRad ?? cfg.minConeAngleRad)
+    );
+    const focusRatio = Math.max(
+      0,
+      Math.min(
+        1,
+        (currentSpread - cfg.minConeAngleRad) /
+          Math.max(0.001, cfg.maxConeAngleRad - cfg.minConeAngleRad)
+      )
+    );
+
+    // Deterministic quasi-random dispersion within [-currentSpread/2, +currentSpread/2]
+    // Tight precision when focused/stationary; wider dispersion when moving with open cone
+    const spreadPattern = [0.22, -0.34, 0.42, -0.26, 0.37, -0.44, 0.16, -0.31];
+    const baseFactor = spreadPattern[(world.shotsFired - 1) % spreadPattern.length];
+    const effectiveFactor = baseFactor * (0.25 + 0.75 * focusRatio);
+    const shotSpreadOffsetRad = effectiveFactor * currentSpread;
+    const shotAngle = p.facingAngle + shotSpreadOffsetRad;
+
+    // Apply subtle recoil bloom to the cone after firing
+    p.aimSpreadRad = Math.min(cfg.maxConeAngleRad, currentSpread + cfg.shotBloomRad * 0.5);
+
+    const bulletSpeed = cfg.bulletSpeed;
     const muzzleDist = p.radius + 8;
     const bx = p.x + Math.cos(p.facingAngle) * muzzleDist;
     const by = p.y + Math.sin(p.facingAngle) * muzzleDist;
@@ -681,19 +772,20 @@ export function performAttack(world: ActionWorldState): {
       id: `b_${world.shotsFired}_${world.elapsedTime.toFixed(2)}`,
       x: bx,
       y: by,
-      vx: Math.cos(p.facingAngle) * bulletSpeed,
-      vy: Math.sin(p.facingAngle) * bulletSpeed,
+      vx: Math.cos(shotAngle) * bulletSpeed,
+      vy: Math.sin(shotAngle) * bulletSpeed,
       radius: 4,
-      damage: WEAPON_CONFIG.pistola.damage,
+      damage: cfg.damage,
       lifeTimer: 0.95,
       active: true,
+      shotSpreadOffsetRad,
     };
 
     world.bullets.push(bullet);
     world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.15);
 
     // Gunshot emits high-radius acoustic impulse (480px) attracting zombies
-    emitNoise(world, p.x, p.y, WEAPON_CONFIG.pistola.noiseRadius, 'gunshot');
+    emitNoise(world, p.x, p.y, cfg.noiseRadius, 'gunshot');
 
     // If clip became 0 after this shot, trigger reload immediately
     if (p.ammoInClip === 0 && p.ammoReserve > 0) {
@@ -1013,6 +1105,127 @@ export function findNearestInteractable(world: ActionWorldState): InteractPrompt
   return null;
 }
 
+export function findInteractableAtWorldPoint(
+  world: ActionWorldState,
+  worldX: number,
+  worldY: number
+): InteractPrompt | null {
+  const p = world.player;
+
+  // 1. Check unlooted contextual objects (including linked car/furniture obstacle bounds)
+  for (const spot of world.lootSpots) {
+    if (spot.looted) continue;
+
+    // Player must be within interaction proximity and not blocked by a wall
+    const distPlayerToSpot = Math.hypot(spot.x - p.x, spot.y - p.y);
+    if (distPlayerToSpot > spot.radius + p.radius + 32) continue;
+    if (isSegmentBlockedByWall(p.x, p.y, spot.x, spot.y, world.obstacles)) continue;
+
+    const distTouchToSpot = Math.hypot(worldX - spot.x, worldY - spot.y);
+    let hitObject = distTouchToSpot <= spot.radius + 38;
+
+    // Also allow tapping anywhere on the linked vehicle or furniture obstacle body
+    if (!hitObject && spot.obstacleId) {
+      const obs = world.obstacles.find((o) => o.id === spot.obstacleId);
+      if (
+        obs &&
+        worldX >= obs.x - 20 &&
+        worldX <= obs.x + obs.width + 20 &&
+        worldY >= obs.y - 20 &&
+        worldY <= obs.y + obs.height + 20
+      ) {
+        hitObject = true;
+      }
+    }
+
+    if (hitObject) {
+      const verb = spot.actionVerb ?? getDefaultVerbForContainer(spot.containerType);
+      return {
+        targetType: 'loot',
+        id: spot.id,
+        label: `${verb} — ${spot.label}`,
+        actionVerb: verb,
+        containerType: spot.containerType,
+        x: spot.x,
+        y: spot.y,
+      };
+    }
+  }
+
+  // 2. Check Extraction Zone
+  const ext = world.extractionZone;
+  const distPlayerToExt = Math.hypot(ext.x - p.x, ext.y - p.y);
+  const distTouchToExt = Math.hypot(worldX - ext.x, worldY - ext.y);
+  if (
+    distTouchToExt <= ext.radius + 28 &&
+    distPlayerToExt <= ext.radius + p.radius + 20
+  ) {
+    return {
+      targetType: 'extraction',
+      id: ext.id,
+      label: 'Extrair no Portão do Abrigo (Concluir Incursão)',
+      actionVerb: 'Extrair no Abrigo',
+      x: ext.x,
+      y: ext.y,
+    };
+  }
+
+  return null;
+}
+
+export function tryDirectObjectInteractAtWorldPoint(
+  world: ActionWorldState,
+  worldX: number,
+  worldY: number
+): { consumed: boolean; targetType?: 'loot' | 'extraction'; id?: string } {
+  if (world.status !== 'playing') return { consumed: false };
+  const hit = findInteractableAtWorldPoint(world, worldX, worldY);
+  if (!hit) return { consumed: false };
+
+  triggerInteract(world);
+  return {
+    consumed: true,
+    targetType: hit.targetType,
+    id: hit.id,
+  };
+}
+
+export function updateBuildingRoofs(world: ActionWorldState, dt: number): void {
+  const p = world.player;
+  const currentBuilding = world.buildings.find(
+    (b) => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
+  );
+
+  if (currentBuilding) {
+    world.isInsideBuilding = true;
+    world.currentBuildingName = currentBuilding.name;
+    p.isInsideBuilding = currentBuilding.id;
+    p.currentBuildingName = currentBuilding.name;
+    world.ambientDarkness = Math.max(world.ambientDarkness, 0.36);
+  } else {
+    world.isInsideBuilding = false;
+    world.currentBuildingName = null;
+    p.isInsideBuilding = null;
+    p.currentBuildingName = null;
+  }
+
+  // Smoothly interpolate roofAlpha for each building:
+  // 1.0 when player is outside (roof visible, hiding interior) -> 0.0 when player enters through doorway
+  const transitionStep = Math.min(1, Math.max(0.01, dt) * 5.0);
+  for (const bld of world.buildings) {
+    const isPlayerInsideThis = currentBuilding?.id === bld.id;
+    const targetAlpha = isPlayerInsideThis ? 0.0 : 1.0;
+    const currentAlpha = bld.roofAlpha ?? 1.0;
+    if (Math.abs(targetAlpha - currentAlpha) <= transitionStep) {
+      bld.roofAlpha = targetAlpha;
+    } else if (targetAlpha < currentAlpha) {
+      bld.roofAlpha = Math.max(0, Number((currentAlpha - transitionStep).toFixed(4)));
+    } else {
+      bld.roofAlpha = Math.min(1, Number((currentAlpha + transitionStep).toFixed(4)));
+    }
+  }
+}
+
 export function triggerInteract(world: ActionWorldState): {
   interacted: boolean;
   action?: 'looted' | 'extracted' | 'inventory_full';
@@ -1094,7 +1307,7 @@ export function stepWorld(
     world.lastEventBanner =
       p.equippedWeapon === 'pistola'
         ? 'Equipada: Pistola Tática 9mm'
-        : 'Equipado: Facão Tático (Cone de Golpe Silencioso)';
+        : 'Equipado: Facão Tático (Cone de Golpe Curto)';
   }
 
   if (input.reloadJustPressed && p.equippedWeapon === 'pistola') {
@@ -1138,23 +1351,6 @@ export function stepWorld(
       world.timeOfDay = 'madrugada';
       world.ambientDarkness = 0.34;
     }
-  }
-
-  // --- Building Interior Check (Indoor Roof Shadow & Ambiance) ---
-  const currentBuilding = world.buildings.find(
-    (b) => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
-  );
-  if (currentBuilding) {
-    world.isInsideBuilding = true;
-    world.currentBuildingName = currentBuilding.name;
-    p.isInsideBuilding = currentBuilding.id;
-    p.currentBuildingName = currentBuilding.name;
-    world.ambientDarkness = Math.max(world.ambientDarkness, 0.36);
-  } else {
-    world.isInsideBuilding = false;
-    world.currentBuildingName = null;
-    p.isInsideBuilding = null;
-    p.currentBuildingName = null;
   }
 
   // --- Flashlight Battery Drain ---
@@ -1243,6 +1439,69 @@ export function stepWorld(
     }
   }
 
+  // Facing direction: explicit aimAngle takes priority, otherwise movement direction (NO auto-aim snap to zombies)
+  const prevFacingAngle = p.facingAngle;
+  if (input.aimAngle !== null && Number.isFinite(input.aimAngle)) {
+    p.facingAngle = input.aimAngle;
+  } else if (moveMag > 0.1) {
+    p.facingAngle = Math.atan2(normY, normX);
+  }
+  const aimTurnDelta = Math.abs(
+    ((p.facingAngle - prevFacingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+  );
+
+  // --- Bullet Echo Dynamic Aim Funnel / Cone Spread ---
+  const pistolCfg = WEAPON_CONFIG.pistola;
+  const playerSpeed = Math.hypot(p.vx, p.vy);
+  const currentSpread = p.aimSpreadRad ?? pistolCfg.minConeAngleRad;
+  let targetSpread = pistolCfg.minConeAngleRad;
+
+  if (playerSpeed > 15 || p.dodgeTimer > 0) {
+    const speedRatio = Math.min(1, playerSpeed / 185);
+    targetSpread = p.sprinting
+      ? pistolCfg.maxConeAngleRad
+      : pistolCfg.minConeAngleRad +
+        (pistolCfg.moveConeAngleRad - pistolCfg.minConeAngleRad) * speedRatio;
+  }
+  if (dt > 0 && aimTurnDelta / dt > 2.2) {
+    targetSpread = Math.min(
+      pistolCfg.maxConeAngleRad,
+      targetSpread + Math.min(0.22, aimTurnDelta * 0.45)
+    );
+  }
+
+  if (targetSpread > currentSpread) {
+    const stepUp = Math.max(
+      (targetSpread - currentSpread) * Math.min(1, dt * pistolCfg.widenSpeed),
+      dt * 0.18
+    );
+    p.aimSpreadRad = Math.min(pistolCfg.maxConeAngleRad, Math.min(targetSpread, currentSpread + stepUp));
+  } else {
+    const stepDown = Math.max(
+      (currentSpread - targetSpread) * Math.min(1, dt * pistolCfg.focusSpeed),
+      dt * 0.14
+    );
+    p.aimSpreadRad = Math.max(pistolCfg.minConeAngleRad, Math.max(targetSpread, currentSpread - stepDown));
+  }
+
+  // Move player with solid wall/obstacle collisions
+  const movedPlayer = moveEntityWithCollisions(
+    p.x,
+    p.y,
+    p.vx,
+    p.vy,
+    p.radius,
+    dt,
+    world.obstacles,
+    world.worldWidth,
+    world.worldHeight
+  );
+  p.x = movedPlayer.x;
+  p.y = movedPlayer.y;
+
+  // --- Building Roof & Interior Transition (tracks player's real position after movement) ---
+  updateBuildingRoofs(world, dt);
+
   // Contextual Proximity Looting with Object-Specific Duration, Wall Check & Capacity Check:
   const nearestLoot = world.lootSpots.find(
     (s) =>
@@ -1301,27 +1560,8 @@ export function stepWorld(
     world.activeLooting = null;
   }
 
-  // Facing direction: explicit aimAngle takes priority, otherwise movement direction
-  if (input.aimAngle !== null && Number.isFinite(input.aimAngle)) {
-    p.facingAngle = input.aimAngle;
-  } else if (moveMag > 0.1) {
-    p.facingAngle = Math.atan2(normY, normX);
-  }
-
-  // Move player with solid wall/obstacle collisions
-  const movedPlayer = moveEntityWithCollisions(
-    p.x,
-    p.y,
-    p.vx,
-    p.vy,
-    p.radius,
-    dt,
-    world.obstacles,
-    world.worldWidth,
-    world.worldHeight
-  );
-  p.x = movedPlayer.x;
-  p.y = movedPlayer.y;
+  // Update Bullet Echo target engagement before & after attack
+  updateEngagedTargets(world);
 
   // Attack handling (supports attacking while moving)
   if (input.attackJustPressed || input.attackHeld) {
@@ -1492,10 +1732,11 @@ export function stepWorld(
       const tdy = targetY - z.y;
       const desiredAngle = Math.atan2(tdy, tdx);
 
-      // Smooth angular turning so zombie rotation is natural
+      // Parameterized angular turning per archetype (instead of fixed constant)
       const turnDiff =
         ((desiredAngle - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-      z.facingAngle += turnDiff * Math.min(1, dt * 12);
+      const turnRate = z.turnRateRad ?? zCfg.turnRateRad;
+      z.facingAngle += turnDiff * Math.min(1, dt * turnRate);
 
       // Handle windup attack telegraph if near actual player
       if (z.isWindingUp) {
@@ -1585,6 +1826,7 @@ export function stepWorld(
     }
   }
 
+  updateEngagedTargets(world);
   world.activePrompt = findNearestInteractable(world);
   return world;
 }

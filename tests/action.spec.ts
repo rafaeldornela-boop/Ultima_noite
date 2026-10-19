@@ -11,6 +11,7 @@ import {
   startReload,
   stepWorld,
   triggerInteract,
+  tryDirectObjectInteractAtWorldPoint,
   useFieldMedkit,
   WEAPON_CONFIG,
   ZOMBIE_ARCHETYPE_CONFIG,
@@ -328,40 +329,56 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(z.vx).toBeGreaterThan(0);
   });
 
-  it('12. Zumbis comuns têm velocidade reduzida (~60%) e todos os distritos usam zumbis comuns por padrão', () => {
-    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.speed).toBeGreaterThanOrEqual(34);
-    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.speed).toBeLessThanOrEqual(41);
+  it('12. Zumbis comuns têm velocidade 37 (~60%) e velocidade de rotação parametrizada por arquétipo', () => {
+    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.speed).toBe(37);
+    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad).toBeGreaterThan(0);
+    expect(ZOMBIE_ARCHETYPE_CONFIG.corredor.turnRateRad).toBeGreaterThan(
+      ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad
+    );
+    expect(ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad).toBeGreaterThan(
+      ZOMBIE_ARCHETYPE_CONFIG.bruto.turnRateRad
+    );
 
     for (const distId of ['vila_esperanca', 'centro_comercial', 'complexo_medico'] as const) {
       const w = createInitialWorldState(`spec_z_${distId}`, distId);
       expect(w.zombies.length).toBeGreaterThan(0);
       expect(w.zombies.every((z) => z.archetype === 'lento')).toBe(true);
-      expect(w.zombies.every((z) => z.speed === ZOMBIE_ARCHETYPE_CONFIG.lento.speed)).toBe(true);
+      expect(w.zombies.every((z) => z.speed === 37)).toBe(true);
+      expect(
+        w.zombies.every((z) => z.turnRateRad === ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad)
+      ).toBe(true);
     }
   });
 
-  it('13. Cone direcional do facão atinge inimigos na área, ignora fora do cone ou atrás de parede e emite menos ruído', () => {
+  it('13. Facão padronizado em 38 PV (1 alvo por golpe), ruído efetivo de 95 px (pistola 480 px) e bloqueio por parede', () => {
+    expect(WEAPON_CONFIG.facao.damage).toBe(38);
+    expect(WEAPON_CONFIG.facao.noiseRadius).toBe(95);
+    expect(WEAPON_CONFIG.pistola.noiseRadius).toBe(480);
+
     const world = createInitialWorldState('spec_machete_cone');
     world.player.x = 500;
     world.player.y = 500;
     world.player.facingAngle = 0; // Leste
     world.player.equippedWeapon = 'facao';
 
-    const zFront = createZombieFromArchetype('z_front', 'lento', 555, 505); // Dentro do cone e alcance (86px)
+    const zFront = createZombieFromArchetype('z_front', 'lento', 550, 502); // Mais próximo no cone
+    const zSecondInCone = createZombieFromArchetype('z_second', 'lento', 572, 512); // Segundo alvo no cone
     const zBehind = createZombieFromArchetype('z_behind', 'lento', 445, 500); // Atrás do jogador
     const zFar = createZombieFromArchetype('z_far', 'lento', 630, 500); // Fora do alcance
-    world.zombies = [zFront, zBehind, zFar];
-    world.obstacles = []; // Sem paredes inicialmente
+    world.zombies = [zFront, zSecondInCone, zBehind, zFar];
+    world.obstacles = [];
 
     const res = performAttack(world);
     expect(res.type).toBe('melee');
     expect(res.hits).toBe(1);
-    expect(zFront.hp).toBe(zFront.maxHp - WEAPON_CONFIG.facao.damage);
+    expect(zFront.hp).toBe(zFront.maxHp - 38);
+    expect(zSecondInCone.hp).toBe(zSecondInCone.maxHp); // Apenas 1 acerto por golpe
     expect(zBehind.hp).toBe(zBehind.maxHp);
     expect(zFar.hp).toBe(zFar.maxHp);
-    expect(world.noiseEvents[world.noiseEvents.length - 1].radius).toBeLessThan(
-      WEAPON_CONFIG.pistola.noiseRadius
-    );
+
+    const lastNoise = world.noiseEvents[world.noiseEvents.length - 1];
+    expect(lastNoise.source).toBe('melee');
+    expect(lastNoise.radius).toBe(95);
 
     // Adiciona uma parede sólida entre o jogador e zFront
     world.player.attackCooldown = 0;
@@ -376,7 +393,6 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
 
   it('14. Saque contextual em objetos do cenário respeita parede e preserva itens quando a mochila está cheia', () => {
     const world = createInitialWorldState('spec_contextual_loot');
-    // Todos os pontos de saque devem ser móveis ou compartimentos reais do cenário
     const validContainers = new Set([
       'armario',
       'gaveta',
@@ -395,8 +411,9 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     world.player.x = spot.x;
     world.player.y = spot.y;
 
-    // Enche a mochila no limite máximo
+    // Enche a mochila no limite máximo e zera munição do spot para testar bloqueio total
     world.maxCarryCapacity = 10;
+    spot.contents = { comida: 3, materiais: 2 };
     world.runLoot = { comida: 5, medicamentos: 2, municao: 0, materiais: 3 };
 
     const fullRes = triggerInteract(world);
@@ -440,6 +457,146 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     toggleOn.toggleFlashlightJustPressed = true;
     stepWorld(world, toggleOn, 0.05);
     expect(world.player.flashlight.enabled).toBe(true);
+  });
+
+  it('16. Casas e edifícios começam com telhado visível (roofAlpha=1), revelam o interior suavemente ao entrar e voltam a cobrir ao sair', () => {
+    const world = createInitialWorldState('spec_roof_transition', 'vila_esperanca');
+    const casaSantos = world.buildings.find((b) => b.id === 'bld_casa_santos')!;
+    const mercearia = world.buildings.find((b) => b.id === 'bld_mercearia')!;
+
+    // Jogador inicia na rua fora das construções -> todos os telhados cobrem o interior (roofAlpha = 1)
+    expect(world.isInsideBuilding).toBe(false);
+    expect(casaSantos.roofAlpha).toBe(1);
+    expect(mercearia.roofAlpha).toBe(1);
+
+    // Jogador entra pela porta da Residência Família Santos (ex.: x=340, y=360)
+    world.player.x = 340;
+    world.player.y = 360;
+    stepWorld(world, createDefaultInputState(), 0.05);
+    expect(world.isInsideBuilding).toBe(true);
+    expect(world.player.isInsideBuilding).toBe('bld_casa_santos');
+    expect(casaSantos.roofAlpha!).toBeLessThan(1);
+    expect(casaSantos.roofAlpha!).toBeGreaterThan(0);
+    expect(mercearia.roofAlpha).toBe(1); // Outros edifícios continuam cobertos
+
+    // Avança mais alguns frames dentro da casa até o telhado ficar totalmente transparente (0)
+    for (let i = 0; i < 10; i++) {
+      stepWorld(world, createDefaultInputState(), 0.05);
+    }
+    expect(casaSantos.roofAlpha).toBe(0);
+
+    // Ao sair de volta para a rua (x=340, y=500), o telhado volta suavemente a cobrir o interior (1)
+    world.player.x = 340;
+    world.player.y = 500;
+    stepWorld(world, createDefaultInputState(), 0.05);
+    expect(world.isInsideBuilding).toBe(false);
+    expect(casaSantos.roofAlpha!).toBeGreaterThan(0);
+
+    for (let i = 0; i < 10; i++) {
+      stepWorld(world, createDefaultInputState(), 0.05);
+    }
+    expect(casaSantos.roofAlpha).toBe(1);
+  });
+
+  it('17. Mira estilo Bullet Echo abre em movimento, estreita ao parar, acompanha a dispersão real dos tiros e destaca alvo sem auto-aim', () => {
+    const world = createInitialWorldState('spec_bullet_echo_aim');
+    world.obstacles = [];
+    world.zombies = [];
+    world.player.x = 500;
+    world.player.y = 500;
+    world.player.facingAngle = 0;
+
+    const minCone = WEAPON_CONFIG.pistola.minConeAngleRad;
+    expect(world.player.aimSpreadRad).toBeCloseTo(minCone, 4);
+
+    // 1. Em movimento, o cone se abre progressivamente
+    const moveInp = createDefaultInputState();
+    moveInp.moveX = 1;
+    moveInp.aimAngle = 0;
+    for (let i = 0; i < 12; i++) {
+      stepWorld(world, moveInp, 0.05);
+    }
+    const wideSpread = world.player.aimSpreadRad;
+    expect(wideSpread).toBeGreaterThan(minCone * 2.2);
+
+    // Disparos em movimento apresentam dispersão angular maior, respeitando o cone aberto
+    const movingOffsets: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      world.player.attackCooldown = 0;
+      world.player.ammoInClip = 12;
+      world.player.aimSpreadRad = wideSpread;
+      performAttack(world);
+      const b = world.bullets[world.bullets.length - 1];
+      movingOffsets.push(Math.abs(b.shotSpreadOffsetRad ?? 0));
+      expect(Math.abs(b.shotSpreadOffsetRad ?? 0)).toBeLessThanOrEqual(wideSpread * 0.5 + 1e-4);
+    }
+
+    // 2. Ao parar e manter a mira estável, o cone se estreita suavemente até o limite mínimo
+    const steadyInp = createDefaultInputState();
+    steadyInp.aimAngle = 0;
+    stepWorld(world, steadyInp, 0.05);
+    const midSpread = world.player.aimSpreadRad;
+    expect(midSpread).toBeLessThan(wideSpread);
+    expect(midSpread).toBeGreaterThan(minCone);
+
+    for (let i = 0; i < 30; i++) {
+      stepWorld(world, steadyInp, 0.05);
+    }
+    expect(world.player.aimSpreadRad).toBeCloseTo(minCone, 3);
+
+    // Disparos com mira focada têm dispersão significativamente menor do que em movimento
+    const focusedOffsets: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      world.player.attackCooldown = 0;
+      world.player.ammoInClip = 12;
+      world.player.aimSpreadRad = minCone;
+      performAttack(world);
+      const b = world.bullets[world.bullets.length - 1];
+      focusedOffsets.push(Math.abs(b.shotSpreadOffsetRad ?? 0));
+      expect(Math.abs(b.shotSpreadOffsetRad ?? 0)).toBeLessThanOrEqual(minCone * 0.5 + 1e-4);
+    }
+
+    const avgMoving = movingOffsets.reduce((a, b) => a + b, 0) / movingOffsets.length;
+    const avgFocused = focusedOffsets.reduce((a, b) => a + b, 0) / focusedOffsets.length;
+    expect(avgMoving).toBeGreaterThan(avgFocused * 3);
+
+    // 3. Zumbi na área válida é destacado como engajado sem fazer a mira grudar automaticamente
+    const zTarget = createZombieFromArchetype('z_cone_target', 'lento', world.player.x + 140, world.player.y + 8);
+    world.zombies = [zTarget];
+    const manualAimAngle = 0.01;
+    steadyInp.aimAngle = manualAimAngle;
+    stepWorld(world, steadyInp, 0.05);
+
+    expect(world.player.engagedTargetIds).toContain('z_cone_target');
+    expect(world.player.engagedTargetId).toBe('z_cone_target');
+    // Preserva o ângulo manual sem saltar para o centro do zumbi
+    expect(world.player.facingAngle).toBeCloseTo(manualAimAngle, 5);
+  });
+
+  it('18. Toque direto em carro ou móvel saqueável interage sem acionar acidentalmente o joystick esquerdo', () => {
+    const world = createInitialWorldState('spec_mobile_direct_tap', 'vila_esperanca');
+    const pickupSpot = world.lootSpots.find((s) => s.id === 'loot_porta_luvas_pickup')!;
+    const pickupCar = world.obstacles.find((o) => o.id === 'car_pickup')!;
+
+    // Posiciona o jogador próximo à picape
+    world.player.x = pickupSpot.x;
+    world.player.y = pickupSpot.y + 18;
+
+    // Toque em área vazia da rua NÃO consome o evento (permite abrir o joystick esquerdo normalmente)
+    const emptyTouch = tryDirectObjectInteractAtWorldPoint(world, 100, 900);
+    expect(emptyTouch.consumed).toBe(false);
+    expect(pickupSpot.looted).toBe(false);
+
+    // Toque direto sobre a carroceria do carro (car_pickup) consome o toque e realiza o saque sem abrir joystick
+    const carBodyTouch = tryDirectObjectInteractAtWorldPoint(
+      world,
+      pickupCar.x + pickupCar.width * 0.5,
+      pickupCar.y + pickupCar.height * 0.5
+    );
+    expect(carBodyTouch.consumed).toBe(true);
+    expect(carBodyTouch.targetType).toBe('loot');
+    expect(carBodyTouch.id).toBe('loot_porta_luvas_pickup');
+    expect(pickupSpot.looted).toBe(true);
   });
 });
 

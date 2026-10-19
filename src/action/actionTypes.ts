@@ -47,6 +47,8 @@ export interface BuildingZone {
   width: number;
   height: number;
   floorColor: number;
+  roofColor?: number;
+  roofAlpha?: number; // 1.0 when player is outside (roof visible hiding interior), smoothly fades to 0.0 when player enters
 }
 
 export interface LootSpot {
@@ -97,6 +99,9 @@ export interface PlayerEntity {
   vy: number;
   radius: number;
   facingAngle: number; // radians
+  aimSpreadRad: number; // Dynamic Bullet Echo cone total angle (radians): widens when moving, narrows when steady
+  engagedTargetId: string | null; // Primary zombie inside valid attack cone & range
+  engagedTargetIds: string[]; // All zombies inside valid attack cone & range
   hp: number;
   maxHp: number;
   stamina: number;
@@ -130,6 +135,7 @@ export interface ZombieEntity {
   vy: number;
   radius: number;
   facingAngle: number;
+  turnRateRad: number; // Parameterized angular rotation rate per archetype (rad/s)
   visionConeAngle: number; // radians (e.g. 1.3 rad ~= 75 deg)
   visionRange: number; // base detection sight distance
   alertState: 'idle' | 'patrol' | 'investigating' | 'hunting';
@@ -162,6 +168,7 @@ export interface BulletEntity {
   damage: number;
   lifeTimer: number;
   active: boolean;
+  shotSpreadOffsetRad?: number;
 }
 
 export interface FloatingFeedback {

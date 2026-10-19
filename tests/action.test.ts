@@ -11,6 +11,7 @@ import {
   performAttack,
   stepWorld,
   triggerInteract,
+  tryDirectObjectInteractAtWorldPoint,
   WEAPON_CONFIG,
   ZOMBIE_ARCHETYPE_CONFIG,
 } from '../src/action/actionRules.ts';
@@ -268,8 +269,13 @@ test('Top-Down Action: visão direcional e furtividade pelas costas de zumbis', 
   assert.ok(z.vx > 0);
 });
 
-test('Top-Down Action: zumbis comuns mais lentos (~60%), cone do facão obstruído por parede e parada imediata do joystick', () => {
-  assert.ok(ZOMBIE_ARCHETYPE_CONFIG.lento.speed >= 34 && ZOMBIE_ARCHETYPE_CONFIG.lento.speed <= 41);
+test('Top-Down Action: zumbis comuns (vel 37, rotação parametrizada), facão (38 PV, 95 px ruído, 1 alvo) e parada imediata do joystick', () => {
+  assert.equal(ZOMBIE_ARCHETYPE_CONFIG.lento.speed, 37);
+  assert.ok(ZOMBIE_ARCHETYPE_CONFIG.corredor.turnRateRad > ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad);
+  assert.ok(ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad > ZOMBIE_ARCHETYPE_CONFIG.bruto.turnRateRad);
+  assert.equal(WEAPON_CONFIG.facao.damage, 38);
+  assert.equal(WEAPON_CONFIG.facao.noiseRadius, 95);
+  assert.equal(WEAPON_CONFIG.pistola.noiseRadius, 480);
 
   const world = createInitialWorldState('node_integrated_v2');
   world.player.x = 500;
@@ -277,13 +283,16 @@ test('Top-Down Action: zumbis comuns mais lentos (~60%), cone do facão obstruí
   world.player.facingAngle = 0;
   world.player.equippedWeapon = 'facao';
 
-  const zFront = createZombieFromArchetype('z_front', 'lento', 555, 500);
-  world.zombies = [zFront];
+  const zFront = createZombieFromArchetype('z_front', 'lento', 550, 500);
+  const zSecond = createZombieFromArchetype('z_second', 'lento', 572, 508);
+  world.zombies = [zFront, zSecond];
   world.obstacles = [];
 
   const hitRes = performAttack(world);
   assert.equal(hitRes.hits, 1);
-  assert.equal(zFront.hp, zFront.maxHp - WEAPON_CONFIG.facao.damage);
+  assert.equal(zFront.hp, zFront.maxHp - 38);
+  assert.equal(zSecond.hp, zSecond.maxHp);
+  assert.equal(world.noiseEvents[world.noiseEvents.length - 1].radius, 95);
 
   // Obstrução por parede bloqueia o cone do facão
   world.player.attackCooldown = 0;
@@ -302,6 +311,63 @@ test('Top-Down Action: zumbis comuns mais lentos (~60%), cone do facão obstruí
   assert.equal(world.player.vx, 0);
   assert.equal(world.player.vy, 0);
 });
+
+test('Top-Down Action: transição telhado/interior, mira dinâmica Bullet Echo e toque direto em objetos mobile', () => {
+  const world = createInitialWorldState('node_roof_and_aim', 'vila_esperanca');
+  const casaSantos = world.buildings.find((b) => b.id === 'bld_casa_santos')!;
+  assert.equal(casaSantos.roofAlpha, 1);
+
+  // Entra pela porta da casa -> telhado desaparece suavemente até 0
+  world.player.x = 340;
+  world.player.y = 360;
+  for (let i = 0; i < 12; i++) {
+    stepWorld(world, createDefaultInputState(), 0.05);
+  }
+  assert.equal(world.isInsideBuilding, true);
+  assert.equal(casaSantos.roofAlpha, 0);
+
+  // Sai da casa -> telhado volta a cobrir o interior (1)
+  world.player.x = 340;
+  world.player.y = 500;
+  for (let i = 0; i < 12; i++) {
+    stepWorld(world, createDefaultInputState(), 0.05);
+  }
+  assert.equal(world.isInsideBuilding, false);
+  assert.equal(casaSantos.roofAlpha, 1);
+
+  // Cone Bullet Echo: abre em movimento e estreita ao parar
+  const minCone = WEAPON_CONFIG.pistola.minConeAngleRad;
+  const moveInp = createDefaultInputState();
+  moveInp.moveX = 1;
+  moveInp.aimAngle = 0;
+  for (let i = 0; i < 10; i++) {
+    stepWorld(world, moveInp, 0.05);
+  }
+  const openCone = world.player.aimSpreadRad;
+  assert.ok(openCone > minCone * 2);
+
+  const steadyInp = createDefaultInputState();
+  steadyInp.aimAngle = 0;
+  for (let i = 0; i < 30; i++) {
+    stepWorld(world, steadyInp, 0.05);
+  }
+  assert.ok(Math.abs(world.player.aimSpreadRad - minCone) < 0.01);
+
+  // Toque direto em carro saqueável consome o toque (não ativa joystick esquerdo)
+  const pickupSpot = world.lootSpots.find((s) => s.id === 'loot_porta_luvas_pickup')!;
+  const pickupCar = world.obstacles.find((o) => o.id === 'car_pickup')!;
+  world.player.x = pickupSpot.x;
+  world.player.y = pickupSpot.y + 15;
+
+  const tapCar = tryDirectObjectInteractAtWorldPoint(
+    world,
+    pickupCar.x + pickupCar.width * 0.5,
+    pickupCar.y + pickupCar.height * 0.5
+  );
+  assert.equal(tapCar.consumed, true);
+  assert.equal(pickupSpot.looted, true);
+});
+
 
 
 

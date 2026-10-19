@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Phaser from 'phaser';
-import { buildMinimapSnapshot } from '../action/actionRules.ts';
+import {
+  buildMinimapSnapshot,
+  DEFAULT_MAX_CARRY_CAPACITY,
+  getCarryLoad,
+} from '../action/actionRules.ts';
 import {
   createExternalControlBridge,
   type ExternalControlBridge,
@@ -62,12 +66,8 @@ interface HudReadout {
 
 function buildHudReadout(w: ActionWorldState): HudReadout {
   const minimap = buildMinimapSnapshot(w, 128, 96);
-  const lootTotal =
-    w.runLoot.comida +
-    w.runLoot.medicamentos +
-    w.runLoot.municao +
-    w.runLoot.materiais;
-  const maxCarryCapacity = w.maxCarryCapacity ?? 18;
+  const lootTotal = getCarryLoad(w.runLoot);
+  const maxCarryCapacity = w.maxCarryCapacity ?? DEFAULT_MAX_CARRY_CAPACITY;
 
   return {
     hp: Math.round(w.player.hp),
@@ -185,6 +185,13 @@ export function PhaserArena({
       }
     };
 
+    const handleGlobalTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length === 0) {
+        resetLeftJoystick();
+        resetRightStick();
+      }
+    };
+
     const handleGlobalResetAll = () => {
       resetLeftJoystick();
       resetRightStick();
@@ -192,12 +199,16 @@ export function PhaserArena({
 
     window.addEventListener('pointerup', handleGlobalPointerEnd);
     window.addEventListener('pointercancel', handleGlobalPointerEnd);
+    window.addEventListener('touchend', handleGlobalTouchEnd);
+    window.addEventListener('touchcancel', handleGlobalTouchEnd);
     window.addEventListener('blur', handleGlobalResetAll);
     document.addEventListener('visibilitychange', handleGlobalResetAll);
 
     return () => {
       window.removeEventListener('pointerup', handleGlobalPointerEnd);
       window.removeEventListener('pointercancel', handleGlobalPointerEnd);
+      window.removeEventListener('touchend', handleGlobalTouchEnd);
+      window.removeEventListener('touchcancel', handleGlobalTouchEnd);
       window.removeEventListener('blur', handleGlobalResetAll);
       document.removeEventListener('visibilitychange', handleGlobalResetAll);
     };
@@ -269,6 +280,12 @@ export function PhaserArena({
   const onLeftZonePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (leftPointerIdRef.current !== null) return;
     if ((e.target as HTMLElement).closest('button, [role="button"], [role="group"]')) return;
+
+    // If the player tapped directly on a searchable car, furniture object, or extraction zone,
+    // trigger the contextual interaction and do NOT activate the left movement joystick!
+    if (bridgeRef.current.tryInteractAtScreenPoint?.(e.clientX, e.clientY)) {
+      return;
+    }
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
