@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import {
+  computeTacticalCameraView,
   createDefaultInputState,
   findInteractableAtWorldPoint,
   getEffectiveVisionRanges,
@@ -218,6 +219,8 @@ export class SurvivalActionScene extends Phaser.Scene {
       this.worldState.worldHeight
     );
     this.cameras.main.setBackgroundColor('#0d0c0a');
+    const initialView = computeTacticalCameraView(this.scale.width, this.scale.height);
+    this.cameras.main.setZoom(initialView.zoom);
     this.cameras.main.centerOn(this.worldState.player.x, this.worldState.player.y);
 
     this.mapGraphics = this.add.graphics().setDepth(1);
@@ -284,17 +287,76 @@ export class SurvivalActionScene extends Phaser.Scene {
       }
     };
 
+    const onScaleResize = () => {
+      if (!this.worldState || !this.cameras?.main) return;
+      this.syncCameraToViewport(0);
+      this.renderDynamicEntities(0);
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', clearInputs);
     document.addEventListener('visibilitychange', clearInputs);
+    this.scale.on(Phaser.Scale.Events.RESIZE, onScaleResize);
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', clearInputs);
       document.removeEventListener('visibilitychange', clearInputs);
+      this.scale.off(Phaser.Scale.Events.RESIZE, onScaleResize);
     });
+  }
+
+  private syncCameraToViewport(clampedDt: number): void {
+    const cam = this.cameras?.main;
+    if (!cam || !this.worldState) return;
+
+    const p = this.worldState.player;
+    const view = computeTacticalCameraView(cam.width, cam.height);
+    if (Math.abs(cam.zoom - view.zoom) > 0.002) {
+      cam.setZoom(view.zoom);
+    }
+
+    const halfVisW = (cam.width / cam.zoom) * 0.5;
+    const halfVisH = (cam.height / cam.zoom) * 0.5;
+    const minScrollX = halfVisW - cam.width * 0.5;
+    const maxScrollX = Math.max(
+      minScrollX,
+      this.worldState.worldWidth - halfVisW - cam.width * 0.5
+    );
+    const minScrollY = halfVisH - cam.height * 0.5;
+    const maxScrollY = Math.max(
+      minScrollY,
+      this.worldState.worldHeight - halfVisH - cam.height * 0.5
+    );
+
+    const targetCamX = p.x - cam.width * 0.5;
+    const targetCamY = p.y - cam.height * 0.5;
+
+    if (clampedDt <= 0) {
+      cam.scrollX = Phaser.Math.Clamp(targetCamX, minScrollX, maxScrollX);
+      cam.scrollY = Phaser.Math.Clamp(targetCamY, minScrollY, maxScrollY);
+      return;
+    }
+
+    const lerp = Math.min(1, clampedDt * 9);
+    const shakeScale = this.bridge?.reducedEffects ? 0 : 8.5;
+    const shakeMag =
+      this.worldState.cameraShakeTrauma * this.worldState.cameraShakeTrauma * shakeScale;
+    const shakeX = shakeMag > 0.1 ? (Math.random() - 0.5) * 2 * shakeMag : 0;
+    const shakeY = shakeMag > 0.1 ? (Math.random() - 0.5) * 2 * shakeMag : 0;
+
+    cam.scrollX = Phaser.Math.Clamp(
+      cam.scrollX + (targetCamX - cam.scrollX) * lerp + shakeX,
+      minScrollX,
+      maxScrollX
+    );
+    cam.scrollY = Phaser.Math.Clamp(
+      cam.scrollY + (targetCamY - cam.scrollY) * lerp + shakeY,
+      minScrollY,
+      maxScrollY
+    );
   }
 
   private spawnParticles(
@@ -690,6 +752,7 @@ export class SurvivalActionScene extends Phaser.Scene {
     if (this.isPausedRef() || this.worldState.status !== 'playing') {
       this.justPressedKeys.clear();
       this.mouseJustPressed = false;
+      this.syncCameraToViewport(0);
       this.renderDynamicEntities(0);
       return;
     }
@@ -894,27 +957,8 @@ export class SurvivalActionScene extends Phaser.Scene {
       pt.y += pt.vy * clampedDt;
     }
 
-    // Smooth camera follow + comfort-aware camera shake
-    const cam = this.cameras.main;
-    const targetCamX = p.x - cam.width * 0.5;
-    const targetCamY = p.y - cam.height * 0.5;
-    const lerp = Math.min(1, clampedDt * 9);
-    const shakeScale = this.bridge?.reducedEffects ? 0 : 8.5;
-    const shakeMag =
-      this.worldState.cameraShakeTrauma * this.worldState.cameraShakeTrauma * shakeScale;
-    const shakeX = shakeMag > 0.1 ? (Math.random() - 0.5) * 2 * shakeMag : 0;
-    const shakeY = shakeMag > 0.1 ? (Math.random() - 0.5) * 2 * shakeMag : 0;
-
-    cam.scrollX = Phaser.Math.Clamp(
-      cam.scrollX + (targetCamX - cam.scrollX) * lerp + shakeX,
-      0,
-      Math.max(0, this.worldState.worldWidth - cam.width)
-    );
-    cam.scrollY = Phaser.Math.Clamp(
-      cam.scrollY + (targetCamY - cam.scrollY) * lerp + shakeY,
-      0,
-      Math.max(0, this.worldState.worldHeight - cam.height)
-    );
+    // Smooth camera follow + zoom-aware clamping + comfort-aware camera shake
+    this.syncCameraToViewport(clampedDt);
 
     this.renderDynamicEntities(clampedDt);
 
@@ -1616,7 +1660,7 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     const baseDarkness = Math.min(0.62, Math.max(0.18, w.ambientDarkness));
     const penumbraDarkness = baseDarkness * 0.52;
-    const outerCoverRadius = 1550;
+    const outerCoverRadius = Math.max(2200, Math.hypot(w.worldWidth, w.worldHeight));
 
     // Effective forward visioncone opening & range
     const activeForwardRange = flashlightActive ? flashlightRange : coneRange;

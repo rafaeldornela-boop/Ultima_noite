@@ -5,6 +5,7 @@ import {
   applyExtractionToStash,
   buildMinimapSnapshot,
   computeEvacuationProgress,
+  computeTacticalCameraView,
   createDefaultInputState,
   createInitialPersistentStash,
   createInitialWorldState,
@@ -465,6 +466,30 @@ test('Top-Down Action: progressão do abrigo, sobreviventes, estações, avanço
   assert.equal(evac.ok, true);
   assert.equal(evac.stash.evacuationCompleted, true);
 });
+
+test('Top-Down Action: enquadramento tático da câmera em orientação horizontal (915x412, 740x360) e vertical (412x915) sem distorção', () => {
+  const land915 = computeTacticalCameraView(915, 412);
+  assert.equal(land915.isLandscape, true);
+  assert.ok(land915.zoom >= 0.68 && land915.zoom <= 1.0);
+  assert.ok(land915.visibleWorldWidth >= 980);
+  assert.ok(land915.visibleWorldHeight >= 515);
+
+  const land740 = computeTacticalCameraView(740, 360);
+  assert.equal(land740.isLandscape, true);
+  assert.ok(land740.zoom >= 0.68 && land740.zoom <= 1.0);
+  assert.ok(land740.visibleWorldWidth >= 980);
+  assert.ok(land740.visibleWorldHeight >= 515);
+
+  const port412 = computeTacticalCameraView(412, 915);
+  assert.equal(port412.isLandscape, false);
+  assert.ok(port412.zoom >= 0.72 && port412.zoom <= 1.0);
+  assert.ok(port412.visibleWorldWidth >= 495);
+
+  const desk1440 = computeTacticalCameraView(1440, 900);
+  assert.equal(desk1440.isLandscape, true);
+  assert.equal(desk1440.zoom, 1);
+});
+
 
 
 

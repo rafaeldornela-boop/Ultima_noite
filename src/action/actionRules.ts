@@ -2707,4 +2707,47 @@ export function buildMinimapSnapshot(
   };
 }
 
+export interface TacticalCameraView {
+  zoom: number;
+  visibleWorldWidth: number;
+  visibleWorldHeight: number;
+  isLandscape: boolean;
+}
+
+/**
+ * Computes uniform (non-distorting) camera zoom and visible world dimensions
+ * optimized for horizontal mobile gameplay while preserving vertical tactical read
+ * and supporting portrait fallback without stretching sprites.
+ */
+export function computeTacticalCameraView(
+  viewportWidth: number,
+  viewportHeight: number
+): TacticalCameraView {
+  const safeW = Math.max(240, Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 915);
+  const safeH = Math.max(240, Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 412);
+  const isLandscape = safeW >= safeH;
+
+  let zoom = 1;
+  if (isLandscape) {
+    const minWorldHeight = 520;
+    const minWorldWidth = 980;
+    const zoomByHeight = safeH / minWorldHeight;
+    const zoomByWidth = safeW / minWorldWidth;
+    zoom = Math.max(0.68, Math.min(1.0, Math.min(zoomByHeight, zoomByWidth)));
+  } else {
+    const minWorldWidth = 500;
+    const zoomByWidth = safeW / minWorldWidth;
+    zoom = Math.max(0.72, Math.min(1.0, zoomByWidth));
+  }
+
+  const roundedZoom = Number(zoom.toFixed(3));
+  return {
+    zoom: roundedZoom,
+    visibleWorldWidth: Math.round(safeW / roundedZoom),
+    visibleWorldHeight: Math.round(safeH / roundedZoom),
+    isLandscape,
+  };
+}
+
+
 

@@ -153,7 +153,7 @@ export default function App() {
   const isVictory = endSnapshot?.status === 'extracted';
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#0d0c0a]">
+    <div className="fixed inset-0 w-full h-full overflow-hidden bg-[#0d0c0a]">
       <PhaserArena
         key={runKey}
         worldStateRef={worldStateRef}
@@ -177,18 +177,18 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="pause-modal-title"
-          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
         >
-          <div className="w-full max-w-md rounded-sm bg-[#14110f] border border-[#332a24] p-6 space-y-5 shadow-2xl">
-            <div className="flex items-center gap-3 border-b border-[#241f1b] pb-3">
-              <TitleEmblemSvg className="w-11 h-11 shrink-0" />
+          <div className="w-full max-w-md landscape:max-w-xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-sm bg-[#14110f] border border-[#332a24] p-4 sm:p-5 space-y-3.5 shadow-2xl">
+            <div className="flex items-center gap-3 border-b border-[#241f1b] pb-2.5">
+              <TitleEmblemSvg className="w-10 h-10 shrink-0" />
               <div>
-                <p className="text-[11px] font-bold uppercase tracking-widest text-[#c87a28]">
+                <p className="text-[10px] font-bold uppercase tracking-widest text-[#c87a28]">
                   Operação Suspensa
                 </p>
                 <h2
                   id="pause-modal-title"
-                  className="font-display text-2xl font-bold text-[#ebe5dc] uppercase"
+                  className="font-display text-xl sm:text-2xl font-bold text-[#ebe5dc] uppercase leading-tight"
                 >
                   Setor Vila Esperança
                 </h2>
@@ -196,40 +196,40 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Saúde</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#ebe5dc]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Saúde</div>
+                <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#ebe5dc]">
                   {Math.round(worldStateRef.current.player.hp)} PV
                 </div>
               </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Abates</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#c87a28]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Abates</div>
+                <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#c87a28]">
                   {worldStateRef.current.zombiesKilled}
                 </div>
               </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#52b788]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
+                <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#52b788]">
                   {stash.runsExtracted}
                 </div>
               </div>
             </div>
 
             {/* Comfort & Audio Options */}
-            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-[#8c8277]">
+            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5 space-y-1.5">
+              <div className="text-[9px] font-bold uppercase tracking-widest text-[#8c8277]">
                 Opções de Conforto Visual e Áudio
               </div>
-              <div className="flex flex-col gap-2">
+              <div className="grid grid-cols-1 landscape:grid-cols-2 sm:grid-cols-2 gap-1.5">
                 <button
                   type="button"
                   onClick={() => setReducedEffects((prev) => !prev)}
-                  className="min-h-[40px] px-3 py-1.5 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between text-xs text-[#d6cec2]"
+                  className="min-h-[38px] px-2.5 py-1 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between gap-2 text-[11px] text-[#d6cec2]"
                 >
-                  <span>Reduzir Tremor de Câmera e Clarões</span>
+                  <span className="truncate">Reduzir Tremor e Clarões</span>
                   <span
-                    className={`font-mono-tabular font-bold uppercase ${
+                    className={`font-mono-tabular font-bold uppercase shrink-0 ${
                       reducedEffects ? 'text-[#52b788]' : 'text-[#8c8277]'
                     }`}
                   >
@@ -242,11 +242,11 @@ export default function App() {
                     const next = soundFX.toggleMute();
                     setIsMuted(next);
                   }}
-                  className="min-h-[40px] px-3 py-1.5 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between text-xs text-[#d6cec2]"
+                  className="min-h-[38px] px-2.5 py-1 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between gap-2 text-[11px] text-[#d6cec2]"
                 >
-                  <span>Áudio de Combate e Ambiente [M]</span>
+                  <span className="truncate">Áudio de Combate [M]</span>
                   <span
-                    className={`font-mono-tabular font-bold uppercase ${
+                    className={`font-mono-tabular font-bold uppercase shrink-0 ${
                       !isMuted ? 'text-[#52b788]' : 'text-[#c94a38]'
                     }`}
                   >
@@ -256,27 +256,27 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col landscape:flex-row sm:flex-row gap-2">
               <button
                 type="button"
                 onClick={() => setShellState('playing')}
-                className="min-h-[46px] w-full rounded-sm bg-[#b86f24] hover:bg-[#c87a28] text-[#0d0c0a] font-display text-base font-bold uppercase tracking-wider"
+                className="min-h-[42px] flex-1 px-4 rounded-sm bg-[#b86f24] hover:bg-[#c87a28] text-[#0d0c0a] font-display text-sm sm:text-base font-bold uppercase tracking-wider whitespace-nowrap"
               >
                 Retomar Incursão
               </button>
               <button
                 type="button"
                 onClick={() => startNewRun()}
-                className="min-h-[46px] w-full rounded-sm bg-[#241a17] hover:bg-[#30221e] text-[#ebe5dc] border border-[#422f29] text-xs font-bold uppercase tracking-wider"
+                className="min-h-[42px] px-4 rounded-sm bg-[#241a17] hover:bg-[#30221e] text-[#ebe5dc] border border-[#422f29] text-xs font-bold uppercase tracking-wider whitespace-nowrap"
               >
                 Reiniciar Incursão
               </button>
               <button
                 type="button"
                 onClick={() => setShellState('title')}
-                className="min-h-[46px] w-full rounded-sm bg-[#161311] hover:bg-[#1f1b18] text-[#b8afa4] border border-[#29221d] text-xs font-bold uppercase tracking-wider"
+                className="min-h-[42px] px-4 rounded-sm bg-[#161311] hover:bg-[#1f1b18] text-[#b8afa4] border border-[#29221d] text-xs font-bold uppercase tracking-wider whitespace-nowrap"
               >
-                Recuar ao Menu do Abrigo
+                Recuar ao Abrigo
               </button>
             </div>
           </div>
@@ -289,18 +289,18 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="outcome-modal-title"
-          className="fixed inset-0 z-50 bg-black/88 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/88 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
         >
           <div
-            className={`w-full max-w-md rounded-sm p-6 space-y-5 shadow-2xl border ${
+            className={`w-full max-w-md landscape:max-w-xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-sm p-4 sm:p-5 space-y-3.5 shadow-2xl border ${
               isVictory
                 ? 'bg-[#121a15] border-[#3e6b4e]'
                 : 'bg-[#1a1110] border-[#8f241b]'
             }`}
           >
-            <div className="space-y-1 border-b border-[#26201b] pb-3">
+            <div className="space-y-1 border-b border-[#26201b] pb-2.5">
               <p
-                className={`text-[11px] font-bold uppercase tracking-widest ${
+                className={`text-[10px] font-bold uppercase tracking-widest ${
                   isVictory ? 'text-[#52b788]' : 'text-[#c94a38]'
                 }`}
               >
@@ -310,13 +310,13 @@ export default function App() {
               </p>
               <h2
                 id="outcome-modal-title"
-                className="font-display text-2xl sm:text-3xl font-bold text-[#ebe5dc] uppercase"
+                className="font-display text-xl sm:text-2xl font-bold text-[#ebe5dc] uppercase leading-tight"
               >
                 {isVictory
                   ? 'Portão do Abrigo Alcançado'
                   : 'Sobrevivente Abatido na Zona Urbana'}
               </h2>
-              <p className="text-xs text-[#b8afa4] leading-relaxed">
+              <p className="text-[11px] text-[#b8afa4] leading-relaxed">
                 {isVictory
                   ? 'Os recursos coletados na mochila foram transferidos uma única vez para o inventário permanente do abrigo.'
                   : 'Sem retorno ao Portão de Extração, os suprimentos coletados nesta incursão permaneceram na zona infectada.'}
@@ -324,85 +324,85 @@ export default function App() {
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Abates</div>
-                <div className="font-mono-tabular text-xl font-bold text-[#ebe5dc]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Abates</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#ebe5dc]">
                   {endSnapshot.zombiesKilled}
                 </div>
               </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Duração</div>
-                <div className="font-mono-tabular text-xl font-bold text-[#c87a28]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Duração</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#c87a28]">
                   {Math.max(1, Math.round(endSnapshot.elapsedTime))}s
                 </div>
               </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
-                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
-                <div className="font-mono-tabular text-xl font-bold text-[#52b788]">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#52b788]">
                   {stash.runsExtracted}
                 </div>
               </div>
             </div>
 
-            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3.5 space-y-2">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#c87a28]">
+            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-[#c87a28]">
                 {isVictory
                   ? 'Saque Extraído (e Total no Abrigo):'
                   : 'Estoque Preservado no Abrigo:'}
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 text-xs font-mono-tabular">
-                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-xs font-mono-tabular">
+                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
                     <ResourceIconSvg type="comida" className="w-3.5 h-3.5 shrink-0" />
                     Rações
                   </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
                     {isVictory ? `+${endSnapshot.runLoot.comida} ` : ''}({stash.totalStash.comida})
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
                     <ResourceIconSvg type="medicamentos" className="w-3.5 h-3.5 shrink-0" />
                     Remédios
                   </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
                     {isVictory ? `+${endSnapshot.runLoot.medicamentos} ` : ''}({stash.totalStash.medicamentos})
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
                     <ResourceIconSvg type="municao" className="w-3.5 h-3.5 shrink-0" />
                     Munição
                   </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
                     {isVictory ? `+${endSnapshot.runLoot.municao} ` : ''}({stash.totalStash.municao})
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
                     <ResourceIconSvg type="materiais" className="w-3.5 h-3.5 shrink-0" />
                     Sucata
                   </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
                     {isVictory ? `+${endSnapshot.runLoot.materiais} ` : ''}({stash.totalStash.materiais})
                   </span>
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="flex flex-col landscape:flex-row sm:flex-row gap-2">
               <button
                 type="button"
                 data-start="true"
                 onClick={() => startNewRun()}
-                className="min-h-[46px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-base font-bold uppercase tracking-wider"
+                className="min-h-[44px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-sm sm:text-base font-bold uppercase tracking-wider"
               >
                 {isVictory ? 'Nova Incursão' : 'Tentar Novamente'}
               </button>
               <button
                 type="button"
                 onClick={() => setShellState('title')}
-                className="min-h-[46px] px-5 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#d6cec2] border border-[#2e2722] text-xs font-bold uppercase tracking-wider"
+                className="min-h-[44px] px-5 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#d6cec2] border border-[#2e2722] text-xs font-bold uppercase tracking-wider"
               >
                 Menu do Abrigo
               </button>

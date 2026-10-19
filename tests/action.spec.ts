@@ -4,6 +4,7 @@ import {
   applyExtractionToStash,
   buildMinimapSnapshot,
   computeEvacuationProgress,
+  computeTacticalCameraView,
   createDefaultInputState,
   createInitialPersistentStash,
   createInitialWorldState,
@@ -691,7 +692,26 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(evac.ok).toBe(true);
     expect(evac.stash.evacuationCompleted).toBe(true);
   });
+
+  it('21. Enquadramento de câmera horizontal (915x412 e 740x360) e vertical (412x915) preserva proporção e leitura tática', () => {
+    const land915 = computeTacticalCameraView(915, 412);
+    expect(land915.isLandscape).toBe(true);
+    expect(land915.zoom).toBeGreaterThanOrEqual(0.68);
+    expect(land915.visibleWorldWidth).toBeGreaterThanOrEqual(980);
+    expect(land915.visibleWorldHeight).toBeGreaterThanOrEqual(515);
+
+    const land740 = computeTacticalCameraView(740, 360);
+    expect(land740.isLandscape).toBe(true);
+    expect(land740.visibleWorldWidth).toBeGreaterThanOrEqual(980);
+    expect(land740.visibleWorldHeight).toBeGreaterThanOrEqual(515);
+
+    const port412 = computeTacticalCameraView(412, 915);
+    expect(port412.isLandscape).toBe(false);
+    expect(port412.visibleWorldWidth).toBeGreaterThanOrEqual(495);
+    expect(port412.visibleWorldHeight).toBeGreaterThan(port412.visibleWorldWidth);
+  });
 });
+
 
 
 
