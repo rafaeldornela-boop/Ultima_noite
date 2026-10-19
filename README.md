@@ -1,18 +1,24 @@
-# Último Dia — Sobrevivência
+# Último Dia — Sobrevivência (Protótipo Top-Down Action Survival)
 
-Jogo mobile de sobrevivência zumbi em português brasileiro, construído com **React 19**, **TypeScript (modo estrito)**, **Vite**, **Tailwind CSS** e **Capacitor 8**, com persistência offline e pipeline automatizado para compilação de APK de depuração via **GitHub Actions**.
+Jogo mobile de sobrevivência zumbi em tempo real visto de cima (*top-down action survival*) em português brasileiro, construído com **Phaser 3**, **React 19**, **TypeScript (modo estrito)**, **Vite**, **Tailwind CSS** e **Capacitor 8**, com persistência offline e pipeline automatizado para compilação de APK de depuração via **GitHub Actions**.
 
 ---
 
-## 1. Visão Geral
+## 1. Visão Geral do Protótipo (`prototype/top-down-action`)
 
-Em **Último Dia — Sobrevivência**, você lidera um grupo de sobreviventes em um abrigo urbano improvisado. Cada dia é dividido em cinco etapas claras:
+Esta versão reformula o núcleo da jogabilidade para ação e exploração em tempo real na **Vila Esperança**:
 
-1. **Manhã**: Consumo automático de rações (1 Comida por sobrevivente vivo), avaliação de ferimentos e tratamento médico.
-2. **Preparação**: Escolha do local de exploração (`Supermercado Alvorada`, `Casas Abandonadas`, `Farmácia Central 24h`, `4º Distrito Policial`), seleção da equipe (1 a 3 sobreviventes vivos) e equipamentos táticos.
-3. **Expedição**: Resolução de cartas de evento narrativas com testes de atributos (`Combate`, `Percepção`, `Técnica`, `Resistência`), consumo de recursos, controle de peso da mochila e opção de retirada tática.
-4. **Retorno**: Incorporação única (idempotente) do saque trazido na mochila para o estoque do abrigo.
-5. **Novo Dia**: Construção de melhorias permanentes (`Barricadas Reforçadas`, `Enfermaria Improvisada`, `Oficina de Manutenção`) e resolução da vigília noturna.
+- **Exploração Urbana Top-Down**: Câmera acompanhando o sobrevivente por ruas, calçadas, veículos abandonados e três edificações reconhecíveis (**Mercearia & Padaria São Jorge**, **Farmácia Popular 24h** e **Posto Policial & Oficina**), com colisões sólidas em paredes, gôndolas, barricadas e carros.
+- **Controles Híbridos (Android Multi-Toque e Desktop)**:
+  - **Android / Toque**: Joystick virtual esquerdo para movimentação em 360°/8 direções + Controle direito de mira e disparo simultâneos + botões táticos de **Saquear / Extrair**, **Esquiva / Corrida**, **Recarregar**, **Trocar Arma** e **Curar**.
+  - **Computador**: `WASD` / Setas para mover, `Shift` para correr, `Espaço` para esquiva com vigor, `Mouse` para mirar e atirar, `Q` para alternar entre **Pistola 9mm** e **Facão**, `R` para recarregar, `H` para usar Medicamento e `E` para saquear ou extrair.
+- **Combate em Tempo Real e 3 Variantes de Zumbis**:
+  - **Errante Lento** (`45 PV`): Perseguição constante em grupo.
+  - **Corredor Infectado** (`30 PV`): Rápido, aproxima-se flanqueando em zigue-zague com aviso visual antes do bote.
+  - **Bruto Blindado** (`120 PV`): Alta resistência a recuo e golpe pesado precedido por círculo de telegrafia visual.
+- **Saque, Risco e Extração Persistente**:
+  - Caixas e armários espalhados pelo mapa fornecem **Comida**, **Medicamentos**, **Munição** e **Materiais**.
+  - Para salvar o saque no estoque permanente do abrigo, o jogador precisa alcançar o **Portão do Abrigo (Zona de Extração)** vivo e acionar a extração (`[E]`). Se morrer antes, perde o saque não extraído daquela incursão.
 
 ---
 
@@ -20,84 +26,43 @@ Em **Último Dia — Sobrevivência**, você lidera um grupo de sobreviventes em
 
 ```text
 ├── .github/workflows/
-│   └── android-apk.yml          # Pipeline CI/CD para gerar o APK de depuração na nuvem
-├── docs/
-│   ├── GAME_DESIGN.md           # Documentação detalhada das mecânicas e fórmulas
-│   └── ROADMAP.md               # Próximas etapas planejadas para expansão
+│   └── android-apk.yml              # Pipeline CI/CD para gerar o APK de depuração na nuvem
 ├── src/
+│   ├── action/                      # Motor de jogo Top-Down em tempo real
+│   │   ├── actionTypes.ts           # Contratos TypeScript de entidades, física e saque
+│   │   ├── mapData.ts               # Mapa urbano (Vila Esperança), prédios, obstáculos e spawns
+│   │   ├── actionRules.ts           # Simulação pura (movimento 8D, colisões, armas, IA e extração)
+│   │   └── SurvivalActionScene.ts   # Cena Phaser 3 com câmera, partículas zero-GC e renderização
 │   ├── components/
-│   │   ├── ResourceBar.tsx      # HUD superior (Dia, Etapa, 5 Recursos, Som e Pausa)
-│   │   ├── SurvivorCard.tsx     # Cartão de sobrevivente, atributos, saúde e cura
-│   │   └── SvgArt.tsx           # Ilustrações vetoriais autorais dos locais e retratos
-│   ├── data/
-│   │   ├── cards.ts             # 12 cartas de evento estruturadas com escolhas e riscos
-│   │   ├── locations.ts         # 4 destinos de expedição com perfis de risco e saque
-│   │   ├── resources.ts         # 5 recursos (Comida, Medicamentos, Materiais, Ferramentas, Munição) e equipamentos
-│   │   ├── survivors.ts         # 3 sobreviventes iniciais e metadados de atributos
-│   │   └── upgrades.ts          # 3 melhorias do abrigo com custos e efeitos nas regras
-│   ├── game/
-│   │   ├── rules.ts             # Motor de regras puro, determinístico e testável
-│   │   └── types.ts             # Contratos TypeScript e versão de esquema
-│   ├── screens/
-│   │   ├── TitleScreen.tsx      # Tela inicial com suporte a teclado e ?autostart=1
-│   │   ├── ShelterScreen.tsx    # Gestão do ciclo diário, grupo e acontecimentos
-│   │   ├── ExpeditionScreen.tsx # Preparação, exploração por cartas e relatório de retorno
-│   │   ├── UpgradesScreen.tsx   # Construção das melhorias do abrigo
-│   │   └── JournalScreen.tsx    # Estatísticas, guia de regras, histórico e reinício
+│   │   ├── PhaserArena.tsx          # Integração Phaser + HUD compacto + controles multi-toque
+│   │   ├── ResourceBar.tsx          # Componente preservado da camada base
+│   │   ├── SurvivorCard.tsx         # Componente preservado da camada base
+│   │   └── SvgArt.tsx               # Ícones vetoriais e ilustrações
 │   ├── storage/
-│   │   └── campaignStorage.ts   # Persistência híbrida (@capacitor/preferences + localStorage)
+│   │   ├── actionStorage.ts         # Persistência local do estoque extraído (@capacitor/preferences + localStorage)
+│   │   └── campaignStorage.ts       # Adaptador híbrido base preservado
 │   └── utils/
-│       └── sound.ts             # Efeitos sonoros procedurais via Web Audio API
+│       └── sound.ts                 # Sintetizador Web Audio (tiros, golpes, impactos, saque)
 ├── tests/
-│   ├── rules.test.ts            # Suíte de testes automatizados (Vitest)
-│   └── rules-node.test.ts       # Suíte de testes nativos do Node 22 (node:test)
-└── capacitor.config.ts          # Configuração do Capacitor 8 para Android
+│   ├── action.spec.ts               # Testes Vitest do motor top-down (movimento, colisão, combate, extração)
+│   ├── action.test.ts               # Testes Node.js nativos do motor top-down
+│   ├── rules.spec.ts                # Testes preservados da camada base
+│   └── rules.test.ts                # Testes preservados da camada base
+└── capacitor.config.ts              # Configuração do Capacitor 8 para Android
 ```
 
 ---
 
-## 3. Comandos de Desenvolvimento e Verificação
+## 3. Comandos de Verificação e Build
 
-### Instalar dependências
 ```bash
-npm install
-```
-
-### Executar em modo de desenvolvimento (porta 3000)
-```bash
-npm run dev
-```
-
-### Executar testes automatizados
-```bash
-# Via Vitest
-npm test
-
-# Via executor nativo do Node.js 22
-npm run test:node
-```
-
-### Verificar tipos (TypeScript estrito) e gerar build web de produção
-```bash
+# Verificar tipos em modo estrito
 npm run lint
+
+# Executar suítes de testes automatizados (Vitest e Node runner)
+npm test
+npm run test:node
+
+# Gerar build de produção web
 npm run build
 ```
-
----
-
-## 4. Geração do APK Android (Local e GitHub Actions)
-
-### Na nuvem via GitHub Actions (Recomendado — sem instalar Android Studio)
-1. Envie o código para um repositório no GitHub na branch `main` (ou `master`).
-2. O workflow `.github/workflows/android-apk.yml` será iniciado automaticamente no `push`, ou pode ser disparado manualmente na aba **Actions -> Build Android Debug APK -> Run workflow**.
-3. O pipeline executa Node.js 22 + JDK 21, roda os testes automatizados, compila o projeto web (`vite build`), gera a pasta nativa Android com Capacitor 8 (`npx cap add android` e `npx cap sync android`) e executa `./gradlew assembleDebug`.
-4. Ao finalizar, baixe o artefato **`ultimo-dia-debug.apk`** diretamente na página de resumo da execução do workflow no GitHub Actions.
-
-### Localmente (caso possua Android SDK + JDK 21 configurados)
-```bash
-npm run build
-npx cap add android
-npx cap sync android
-cd android && ./gradlew assembleDebug
-```
-O arquivo gerado estará em `android/app/build/outputs/apk/debug/app-debug.apk`.

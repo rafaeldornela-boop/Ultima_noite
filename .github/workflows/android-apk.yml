@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - prototype/top-down-action
 
 jobs:
   build-android-apk:

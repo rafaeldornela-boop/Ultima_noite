@@ -1,43 +1,29 @@
-import { useCallback, useEffect, useState } from 'react';
-import { ResourceBar } from './components/ResourceBar.tsx';
-import { TitleEmblemSvg } from './components/SvgArt.tsx';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  advanceToNextDay,
-  advanceToPreparation,
-  buildUpgrade,
-  concludeExpeditionReturn,
-  createInitialCampaign,
-  healSurvivor,
-  resolveCardOption,
-  retreatFromExpedition,
-  startExpedition,
-} from './game/rules.ts';
+  applyExtractionToStash,
+  createInitialPersistentStash,
+  createInitialWorldState,
+} from './action/actionRules.ts';
 import type {
-  CampaignState,
-  EquipmentId,
-  LocationId,
-  ShelterUpgradeId,
-} from './game/types.ts';
-import { ExpeditionScreen } from './screens/ExpeditionScreen.tsx';
-import { JournalScreen } from './screens/JournalScreen.tsx';
-import { ShelterScreen } from './screens/ShelterScreen.tsx';
+  ActionWorldState,
+  PersistentShelterStash,
+} from './action/actionTypes.ts';
+import { PhaserArena } from './components/PhaserArena.tsx';
+import { ResourceIconSvg, TitleEmblemSvg } from './components/SvgArt.tsx';
 import { TitleScreen } from './screens/TitleScreen.tsx';
-import { UpgradesScreen } from './screens/UpgradesScreen.tsx';
 import {
-  loadCampaignState,
-  resetCampaignState,
-  saveCampaignState,
-} from './storage/campaignStorage.ts';
+  loadActionStash,
+  resetActionStash,
+  saveActionStash,
+} from './storage/actionStorage.ts';
 import { soundFX } from './utils/sound.ts';
 
 type ShellState = 'title' | 'playing' | 'paused' | 'gameover';
-type ActiveTab = 'abrigo' | 'expedicao' | 'melhorias' | 'diario';
 
 export default function App() {
-  const [campaign, setCampaign] = useState<CampaignState>(() =>
-    createInitialCampaign()
+  const [stash, setStash] = useState<PersistentShelterStash>(() =>
+    createInitialPersistentStash()
   );
-  const [hadSavedData, setHadSavedData] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
 
   const [shellState, setShellState] = useState<ShellState>(() => {
@@ -50,71 +36,30 @@ export default function App() {
     return 'title';
   });
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>('abrigo');
   const [isMuted, setIsMuted] = useState(false);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [reducedEffects, setReducedEffects] = useState(false);
+  const [runKey, setRunKey] = useState(1);
+  const worldStateRef = useRef<ActionWorldState>(createInitialWorldState());
+  const [endSnapshot, setEndSnapshot] = useState<ActionWorldState | null>(null);
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
-  }, []);
-
-  useEffect(() => {
-    if (!toastMessage) return;
-    const timer = window.setTimeout(() => setToastMessage(null), 3200);
-    return () => window.clearTimeout(timer);
-  }, [toastMessage]);
-
-  // Load saved campaign on startup
   useEffect(() => {
     let mounted = true;
-    loadCampaignState().then(({ state, hadSavedData: saved, recoveredFromError }) => {
+    loadActionStash().then((loaded) => {
       if (!mounted) return;
-      setCampaign(state);
-      setHadSavedData(saved);
+      setStash(loaded);
       setIsLoaded(true);
-      if (state.phase === 'derrota') {
-        setShellState('gameover');
-      }
-      if (recoveredFromError) {
-        showToast('Dados anteriores inválidos foram recuperados em uma nova campanha.');
-      }
     });
     return () => {
       mounted = false;
     };
-  }, [showToast]);
-
-  // Sync document.body.dataset.state for Game Shell contract
-  useEffect(() => {
-    if (typeof document !== 'undefined') {
-      const effectiveState: ShellState =
-        campaign.phase === 'derrota' && shellState !== 'title'
-          ? 'gameover'
-          : shellState;
-      document.body.dataset.state = effectiveState;
-    }
-  }, [shellState, campaign.phase]);
-
-  // Reset scroll position to top when navigating tabs, changing cycle phases, or advancing cards
-  useEffect(() => {
-    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
-      window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
-    }
-  }, [activeTab, campaign.phase, campaign.activeExpedition?.currentCardIndex]);
-
-  // Persist campaign changes automatically
-  const updateAndSaveCampaign = useCallback((updater: (prev: CampaignState) => CampaignState) => {
-    setCampaign((prev) => {
-      const next = updater(prev);
-      saveCampaignState(next).catch(() => {});
-      if (next.phase === 'derrota') {
-        setShellState('gameover');
-      }
-      return next;
-    });
   }, []);
 
-  // Keyboard shortcuts (Escape / P for pause, M for mute)
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.dataset.state = shellState;
+    }
+  }, [shellState]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -135,278 +80,86 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const handleStartGame = useCallback(() => {
+  const startNewRun = useCallback(() => {
     soundFX.playClick();
-    if (campaign.phase === 'derrota') {
-      resetCampaignState().then((fresh) => {
-        setCampaign(fresh);
-        setHadSavedData(true);
-        setActiveTab('abrigo');
-        setShellState('playing');
-      });
-    } else {
-      setShellState('playing');
-    }
-  }, [campaign.phase]);
+    const freshWorld = createInitialWorldState();
+    worldStateRef.current = freshWorld;
+    setEndSnapshot(null);
+    setRunKey((prev) => prev + 1);
+    setShellState('playing');
+  }, []);
 
-  const handleResetCampaign = useCallback(() => {
+  const handleResetStash = useCallback(() => {
     soundFX.playDanger();
-    resetCampaignState().then((fresh) => {
-      setCampaign(fresh);
-      setHadSavedData(true);
-      setActiveTab('abrigo');
-      setShellState('playing');
-      showToast('Nova campanha iniciada no Dia 1.');
+    resetActionStash().then((fresh) => {
+      setStash(fresh);
     });
-  }, [showToast]);
+  }, []);
 
-  const handleAdvanceToPrep = useCallback(() => {
-    soundFX.playClick();
-    updateAndSaveCampaign((prev) => advanceToPreparation(prev));
-  }, [updateAndSaveCampaign]);
+  const handleRunFinished = useCallback((finalWorld: ActionWorldState) => {
+    if (finalWorld.extractionProcessed) return;
+    finalWorld.extractionProcessed = true;
 
-  const handleHealSurvivor = useCallback(
-    (survivorId: string) => {
+    if (finalWorld.status === 'extracted') {
       soundFX.playSuccess();
-      updateAndSaveCampaign((prev) => healSurvivor(prev, survivorId));
-      showToast('Tratamento médico aplicado.');
-    },
-    [updateAndSaveCampaign, showToast]
-  );
+    } else {
+      soundFX.playDanger();
+    }
 
-  const handleBuildUpgrade = useCallback(
-    (upgradeId: ShelterUpgradeId) => {
-      soundFX.playSuccess();
-      updateAndSaveCampaign((prev) => buildUpgrade(prev, upgradeId));
-      showToast('Melhoria construída no abrigo!');
-    },
-    [updateAndSaveCampaign, showToast]
-  );
+    setEndSnapshot({
+      ...finalWorld,
+      runLoot: { ...finalWorld.runLoot },
+    });
 
-  const handleStartExpedition = useCallback(
-    (locationId: LocationId, teamIds: string[], equipmentIds: EquipmentId[]) => {
-      soundFX.playClick();
-      updateAndSaveCampaign((prev) =>
-        startExpedition(prev, locationId, teamIds, equipmentIds)
-      );
-      setActiveTab('expedicao');
-    },
-    [updateAndSaveCampaign]
-  );
+    setStash((prevStash) => {
+      const updated = applyExtractionToStash(prevStash, finalWorld);
+      saveActionStash(updated).catch(() => {});
+      return updated;
+    });
 
-  const handleResolveCardOption = useCallback(
-    (optionId: string) => {
-      soundFX.playClick();
-      updateAndSaveCampaign((prev) => resolveCardOption(prev, optionId));
-    },
-    [updateAndSaveCampaign]
-  );
-
-  const handleRetreatExpedition = useCallback(() => {
-    soundFX.playDanger();
-    updateAndSaveCampaign((prev) => retreatFromExpedition(prev));
-    showToast('Retirada tática ordenada.');
-  }, [updateAndSaveCampaign, showToast]);
-
-  const handleConcludeReturn = useCallback(() => {
-    soundFX.playSuccess();
-    updateAndSaveCampaign((prev) => concludeExpeditionReturn(prev));
-    showToast('Suprimentos guardados no estoque do abrigo.');
-  }, [updateAndSaveCampaign, showToast]);
-
-  const handleAdvanceNextDay = useCallback(() => {
-    soundFX.playClick();
-    updateAndSaveCampaign((prev) => advanceToNextDay(prev));
-    setActiveTab('abrigo');
-    showToast(`Amanheceu no abrigo.`);
-  }, [updateAndSaveCampaign, showToast]);
+    setShellState('gameover');
+  }, []);
 
   if (!isLoaded) {
     return (
-      <div className="min-h-screen bg-[#12100e] text-[#e7e2da] flex items-center justify-center p-6">
-        <div className="text-center space-y-2">
-          <div className="font-display text-xl uppercase tracking-wider text-[#d9822b]">
-            Carregando Abrigo...
-          </div>
+      <div className="min-h-screen bg-[#0d0c0a] text-[#ebe5dc] flex items-center justify-center p-6">
+        <div className="font-display text-xl uppercase tracking-widest text-[#c87a28]">
+          Carregando Setor Vila Esperança...
         </div>
       </div>
     );
   }
 
-  // TITLE SCREEN
   if (shellState === 'title') {
     return (
       <TitleScreen
-        state={campaign}
-        hadSavedData={hadSavedData}
-        onStartGame={handleStartGame}
-        onNewCampaign={handleResetCampaign}
+        stash={stash}
+        onStartGame={startNewRun}
+        onResetStash={handleResetStash}
       />
     );
   }
 
+  const isVictory = endSnapshot?.status === 'extracted';
+
   return (
-    <div className="min-h-screen bg-[#12100e] text-[#e7e2da] flex flex-col justify-between pb-20">
-      {/* Top Game HUD */}
-      <ResourceBar
-        state={campaign}
+    <div className="relative w-screen h-screen overflow-hidden bg-[#0d0c0a]">
+      <PhaserArena
+        key={runKey}
+        worldStateRef={worldStateRef}
+        isPaused={shellState !== 'playing'}
         isMuted={isMuted}
+        reducedEffects={reducedEffects}
         onToggleMute={() => {
           const next = soundFX.toggleMute();
           setIsMuted(next);
         }}
-        onOpenPause={() => setShellState('paused')}
+        onToggleReducedEffects={() => setReducedEffects((prev) => !prev)}
+        onTogglePause={() =>
+          setShellState((prev) => (prev === 'playing' ? 'paused' : 'playing'))
+        }
+        onRunFinished={handleRunFinished}
       />
-
-      {/* Toast Feedback Banner */}
-      {toastMessage && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="max-w-6xl mx-auto w-full px-4 pt-3"
-        >
-          <div className="rounded-xl bg-[#241e19] border border-[#d9822b] px-4 py-2.5 text-xs font-semibold text-[#f5f0e6] flex items-center justify-between">
-            <span>{toastMessage}</span>
-            <button
-              type="button"
-              onClick={() => setToastMessage(null)}
-              className="text-[#9e9185] hover:text-white ml-3"
-            >
-              Fechar
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Content Area */}
-      <main className="flex-1 w-full max-w-6xl mx-auto px-4 py-5">
-        {activeTab === 'abrigo' && (
-          <ShelterScreen
-            state={campaign}
-            onAdvanceToPrep={handleAdvanceToPrep}
-            onGoToExpeditionScreen={() => setActiveTab('expedicao')}
-            onConcludeReturn={handleConcludeReturn}
-            onAdvanceNextDay={handleAdvanceNextDay}
-            onHealSurvivor={handleHealSurvivor}
-            onGoToUpgrades={() => setActiveTab('melhorias')}
-          />
-        )}
-
-        {activeTab === 'expedicao' && (
-          <ExpeditionScreen
-            state={campaign}
-            onStartExpedition={handleStartExpedition}
-            onResolveCardOption={handleResolveCardOption}
-            onRetreatExpedition={handleRetreatExpedition}
-            onConcludeReturn={handleConcludeReturn}
-            onAdvanceNextDay={handleAdvanceNextDay}
-            onHealSurvivor={handleHealSurvivor}
-          />
-        )}
-
-        {activeTab === 'melhorias' && (
-          <UpgradesScreen
-            state={campaign}
-            onBuildUpgrade={handleBuildUpgrade}
-          />
-        )}
-
-        {activeTab === 'diario' && (
-          <JournalScreen
-            state={campaign}
-            onResetCampaign={handleResetCampaign}
-          />
-        )}
-      </main>
-
-      {/* Fixed Bottom Thumb-Zone Navigation Bar */}
-      <nav
-        aria-label="Navegação Principal do Jogo"
-        className="fixed bottom-0 left-0 right-0 z-30 bg-[#161311] border-t border-[#2d2520] px-2"
-      >
-        <div className="max-w-6xl mx-auto grid grid-cols-4 h-16 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              setActiveTab('abrigo');
-            }}
-            className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center transition-colors ${
-              activeTab === 'abrigo'
-                ? 'bg-[#251f1b] text-[#d9822b] font-bold'
-                : 'text-[#a89d91] hover:text-[#f0ebe1]'
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10z" />
-              <path d="M9 21V12h6v9" />
-            </svg>
-            <span className="text-[11px] mt-0.5 whitespace-nowrap">Abrigo</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              if (campaign.phase === 'manha') {
-                handleAdvanceToPrep();
-              }
-              setActiveTab('expedicao');
-            }}
-            className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center transition-colors ${
-              activeTab === 'expedicao'
-                ? 'bg-[#251f1b] text-[#d9822b] font-bold'
-                : 'text-[#a89d91] hover:text-[#f0ebe1]'
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
-              <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-              <line x1="9" y1="3" x2="9" y2="18" />
-              <line x1="15" y1="6" x2="15" y2="21" />
-            </svg>
-            <span className="text-[11px] mt-0.5 whitespace-nowrap">
-              {campaign.phase === 'expedicao' ? 'Em Missão' : 'Expedição'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              setActiveTab('melhorias');
-            }}
-            className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center transition-colors ${
-              activeTab === 'melhorias'
-                ? 'bg-[#251f1b] text-[#d9822b] font-bold'
-                : 'text-[#a89d91] hover:text-[#f0ebe1]'
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-            </svg>
-            <span className="text-[11px] mt-0.5 whitespace-nowrap">Melhorias</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              soundFX.playClick();
-              setActiveTab('diario');
-            }}
-            className={`min-h-[48px] rounded-xl flex flex-col items-center justify-center transition-colors ${
-              activeTab === 'diario'
-                ? 'bg-[#251f1b] text-[#d9822b] font-bold'
-                : 'text-[#a89d91] hover:text-[#f0ebe1]'
-            }`}
-          >
-            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
-            </svg>
-            <span className="text-[11px] mt-0.5 whitespace-nowrap">Diário</span>
-          </button>
-        </div>
-      </nav>
 
       {/* PAUSE MODAL */}
       {shellState === 'paused' && (
@@ -414,118 +167,236 @@ export default function App() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="pause-modal-title"
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-4"
         >
-          <div className="w-full max-w-md rounded-2xl bg-[#1c1714] border-2 border-[#3d3129] p-6 space-y-5 shadow-2xl">
-            <div className="flex items-center gap-3">
-              <TitleEmblemSvg className="w-12 h-12 shrink-0" />
+          <div className="w-full max-w-md rounded-sm bg-[#14110f] border border-[#332a24] p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center gap-3 border-b border-[#241f1b] pb-3">
+              <TitleEmblemSvg className="w-11 h-11 shrink-0" />
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-[#d9822b]">
-                  Jogo Pausado
+                <p className="text-[11px] font-bold uppercase tracking-widest text-[#c87a28]">
+                  Operação Suspensa
                 </p>
                 <h2
                   id="pause-modal-title"
-                  className="font-display text-2xl font-bold text-[#f5f0e6] uppercase"
+                  className="font-display text-2xl font-bold text-[#ebe5dc] uppercase"
                 >
-                  Último Dia — Abrigo
+                  Setor Vila Esperança
                 </h2>
               </div>
             </div>
 
-            <div className="grid grid-cols-3 gap-2.5 text-center">
-              <div className="rounded-xl bg-[#14110f] border border-[#29221d] p-2.5">
-                <div className="text-[11px] text-[#9e9185]">Dia Atual</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#f5f0e6]">
-                  {campaign.day}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Saúde</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#ebe5dc]">
+                  {Math.round(worldStateRef.current.player.hp)} PV
                 </div>
               </div>
-              <div className="rounded-xl bg-[#14110f] border border-[#29221d] p-2.5">
-                <div className="text-[11px] text-[#9e9185]">Expedições</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#d9822b]">
-                  {campaign.stats.expeditionsCompleted}
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Abates</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#c87a28]">
+                  {worldStateRef.current.zombiesKilled}
                 </div>
               </div>
-              <div className="rounded-xl bg-[#14110f] border border-[#29221d] p-2.5">
-                <div className="text-[11px] text-[#9e9185]">Eventos</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#f5f0e6]">
-                  {campaign.stats.cardsResolved}
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
+                <div className="font-mono-tabular text-lg font-bold text-[#52b788]">
+                  {stash.runsExtracted}
                 </div>
               </div>
             </div>
 
-            <div className="flex flex-col gap-2.5">
+            {/* Comfort & Audio Options */}
+            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#8c8277]">
+                Opções de Conforto Visual e Áudio
+              </div>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReducedEffects((prev) => !prev)}
+                  className="min-h-[40px] px-3 py-1.5 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between text-xs text-[#d6cec2]"
+                >
+                  <span>Reduzir Tremor de Câmera e Clarões</span>
+                  <span
+                    className={`font-mono-tabular font-bold uppercase ${
+                      reducedEffects ? 'text-[#52b788]' : 'text-[#8c8277]'
+                    }`}
+                  >
+                    {reducedEffects ? 'Ativado' : 'Padrão'}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = soundFX.toggleMute();
+                    setIsMuted(next);
+                  }}
+                  className="min-h-[40px] px-3 py-1.5 rounded-sm bg-[#161311] hover:bg-[#1f1b18] border border-[#2e2722] flex items-center justify-between text-xs text-[#d6cec2]"
+                >
+                  <span>Áudio de Combate e Ambiente [M]</span>
+                  <span
+                    className={`font-mono-tabular font-bold uppercase ${
+                      !isMuted ? 'text-[#52b788]' : 'text-[#c94a38]'
+                    }`}
+                  >
+                    {isMuted ? 'Silenciado' : 'Ativo'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
               <button
                 type="button"
                 onClick={() => setShellState('playing')}
-                className="min-h-[48px] w-full rounded-xl bg-[#d9822b] hover:bg-[#e5923e] text-[#12100e] font-display text-base font-bold uppercase tracking-wider"
+                className="min-h-[46px] w-full rounded-sm bg-[#b86f24] hover:bg-[#c87a28] text-[#0d0c0a] font-display text-base font-bold uppercase tracking-wider"
               >
-                Retomar Campanha
+                Retomar Incursão
+              </button>
+              <button
+                type="button"
+                onClick={startNewRun}
+                className="min-h-[46px] w-full rounded-sm bg-[#241a17] hover:bg-[#30221e] text-[#ebe5dc] border border-[#422f29] text-xs font-bold uppercase tracking-wider"
+              >
+                Reiniciar Incursão
               </button>
               <button
                 type="button"
                 onClick={() => setShellState('title')}
-                className="min-h-[48px] w-full rounded-xl bg-[#241f1b] hover:bg-[#302923] text-[#e7e2da] border border-[#382f28] text-sm font-semibold"
+                className="min-h-[46px] w-full rounded-sm bg-[#161311] hover:bg-[#1f1b18] text-[#b8afa4] border border-[#29221d] text-xs font-bold uppercase tracking-wider"
               >
-                Tela Inicial
+                Recuar ao Menu do Abrigo
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* GAME OVER (DEFEAT) MODAL */}
-      {(shellState === 'gameover' || campaign.phase === 'derrota') && (
+      {/* OUTCOME MODAL: EXTRACTION VICTORY OR COMBAT DEFEAT */}
+      {shellState === 'gameover' && endSnapshot && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-labelledby="gameover-modal-title"
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4"
+          aria-labelledby="outcome-modal-title"
+          className="fixed inset-0 z-50 bg-black/88 flex items-center justify-center p-4"
         >
-          <div className="w-full max-w-md rounded-2xl bg-[#1f1514] border-2 border-[#8c2d23] p-6 space-y-5 shadow-2xl">
-            <div className="space-y-1">
-              <p className="text-xs font-bold uppercase tracking-widest text-[#e05246]">
-                Abrigo Silenciado · Queda Total
+          <div
+            className={`w-full max-w-md rounded-sm p-6 space-y-5 shadow-2xl border ${
+              isVictory
+                ? 'bg-[#121a15] border-[#3e6b4e]'
+                : 'bg-[#1a1110] border-[#8f241b]'
+            }`}
+          >
+            <div className="space-y-1 border-b border-[#26201b] pb-3">
+              <p
+                className={`text-[11px] font-bold uppercase tracking-widest ${
+                  isVictory ? 'text-[#52b788]' : 'text-[#c94a38]'
+                }`}
+              >
+                {isVictory
+                  ? 'Extração Concluída · Suprimentos Salvos'
+                  : 'Baixa em Combate · Saque Perdido'}
               </p>
               <h2
-                id="gameover-modal-title"
-                className="font-display text-3xl font-bold text-[#f5f0e6] uppercase"
+                id="outcome-modal-title"
+                className="font-display text-2xl sm:text-3xl font-bold text-[#ebe5dc] uppercase"
               >
-                Todos os Sobreviventes Morreram
+                {isVictory
+                  ? 'Portão do Abrigo Alcançado'
+                  : 'Sobrevivente Abatido na Zona Urbana'}
               </h2>
-              <p className="text-xs text-[#c7bdb1] leading-relaxed pt-1">
-                Sem ninguém vivo para manter as barricadas erguidas, o abrigo foi tomado. A morte é permanente, mas um novo grupo ainda pode tentar sobreviver.
+              <p className="text-xs text-[#b8afa4] leading-relaxed">
+                {isVictory
+                  ? 'Os recursos coletados na mochila foram transferidos uma única vez para o inventário permanente do abrigo.'
+                  : 'Sem retorno ao Portão de Extração, os suprimentos coletados nesta incursão permaneceram na zona infectada.'}
               </p>
             </div>
 
-            <div className="grid grid-cols-3 gap-2.5 text-center">
-              <div className="rounded-xl bg-[#14100f] border border-[#38221f] p-3">
-                <div className="text-[11px] text-[#9e9185]">Dias Sobrevividos</div>
-                <div className="font-mono-tabular text-xl font-bold text-[#f5f0e6]">
-                  {campaign.day}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Abates</div>
+                <div className="font-mono-tabular text-xl font-bold text-[#ebe5dc]">
+                  {endSnapshot.zombiesKilled}
                 </div>
               </div>
-              <div className="rounded-xl bg-[#14100f] border border-[#38221f] p-3">
-                <div className="text-[11px] text-[#9e9185]">Expedições</div>
-                <div className="font-mono-tabular text-xl font-bold text-[#d9822b]">
-                  {campaign.stats.expeditionsCompleted}
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Duração</div>
+                <div className="font-mono-tabular text-xl font-bold text-[#c87a28]">
+                  {Math.max(1, Math.round(endSnapshot.elapsedTime))}s
                 </div>
               </div>
-              <div className="rounded-xl bg-[#14100f] border border-[#38221f] p-3">
-                <div className="text-[11px] text-[#9e9185]">Saque Total</div>
+              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2.5">
+                <div className="text-[10px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
                 <div className="font-mono-tabular text-xl font-bold text-[#52b788]">
-                  {campaign.stats.totalResourcesLooted}
+                  {stash.runsExtracted}
                 </div>
               </div>
             </div>
 
-            <button
-              type="button"
-              data-start="true"
-              onClick={handleResetCampaign}
-              className="min-h-[48px] w-full rounded-xl bg-[#b93829] hover:bg-[#cc4333] text-[#f5f0e6] font-display text-base font-bold uppercase tracking-wider"
-            >
-              Iniciar Nova Campanha
-            </button>
+            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3.5 space-y-2">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-[#c87a28]">
+                {isVictory
+                  ? 'Saque Extraído (e Total no Abrigo):'
+                  : 'Estoque Preservado no Abrigo:'}
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 text-xs font-mono-tabular">
+                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                    <ResourceIconSvg type="comida" className="w-3.5 h-3.5 shrink-0" />
+                    Rações
+                  </span>
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                    {isVictory ? `+${endSnapshot.runLoot.comida} ` : ''}({stash.totalStash.comida})
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                    <ResourceIconSvg type="medicamentos" className="w-3.5 h-3.5 shrink-0" />
+                    Remédios
+                  </span>
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                    {isVictory ? `+${endSnapshot.runLoot.medicamentos} ` : ''}({stash.totalStash.medicamentos})
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                    <ResourceIconSvg type="municao" className="w-3.5 h-3.5 shrink-0" />
+                    Munição
+                  </span>
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                    {isVictory ? `+${endSnapshot.runLoot.municao} ` : ''}({stash.totalStash.municao})
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2 bg-[#14110f] px-3 py-1.5 rounded-sm border border-[#211c18]">
+                  <span className="inline-flex items-center gap-1.5 text-[#b8afa4]">
+                    <ResourceIconSvg type="materiais" className="w-3.5 h-3.5 shrink-0" />
+                    Sucata
+                  </span>
+                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap">
+                    {isVictory ? `+${endSnapshot.runLoot.materiais} ` : ''}({stash.totalStash.materiais})
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <button
+                type="button"
+                data-start="true"
+                onClick={startNewRun}
+                className="min-h-[46px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-base font-bold uppercase tracking-wider"
+              >
+                {isVictory ? 'Nova Incursão' : 'Tentar Novamente'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShellState('title')}
+                className="min-h-[46px] px-5 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#d6cec2] border border-[#2e2722] text-xs font-bold uppercase tracking-wider"
+              >
+                Menu do Abrigo
+              </button>
+            </div>
           </div>
         </div>
       )}
