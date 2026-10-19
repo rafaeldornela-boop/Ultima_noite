@@ -81,13 +81,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const startNewRun = useCallback((districtId: DistrictId = 'vila_esperanca') => {
-    soundFX.playClick();
-    const freshWorld = createInitialWorldState(undefined, districtId);
-    worldStateRef.current = freshWorld;
-    setEndSnapshot(null);
-    setRunKey((prev) => prev + 1);
-    setShellState('playing');
+  const startNewRun = useCallback(
+    (districtId: DistrictId = 'vila_esperanca') => {
+      soundFX.playClick();
+      const freshWorld = createInitialWorldState(undefined, districtId, stash);
+      worldStateRef.current = freshWorld;
+      setEndSnapshot(null);
+      setRunKey((prev) => prev + 1);
+      setShellState('playing');
+    },
+    [stash]
+  );
+
+  const handleUpdateStash = useCallback((nextStash: PersistentShelterStash) => {
+    setStash(nextStash);
+    saveActionStash(nextStash).catch(() => {});
   }, []);
 
   const handleResetStash = useCallback(() => {
@@ -137,6 +145,7 @@ export default function App() {
         stash={stash}
         onStartGame={startNewRun}
         onResetStash={handleResetStash}
+        onUpdateStash={handleUpdateStash}
       />
     );
   }

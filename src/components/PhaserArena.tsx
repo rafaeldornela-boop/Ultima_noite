@@ -152,10 +152,15 @@ export function PhaserArena({
   });
   const leftPointerIdRef = useRef<number | null>(null);
 
-  // Right virtual aim/attack pad visual state
-  const rightStickRef = useRef<HTMLDivElement | null>(null);
-  const rightKnobRef = useRef<HTMLDivElement | null>(null);
-  const rightPointerIdRef = useRef<number | null>(null);
+  // Dedicated Aim Dial state (only control allowed to change aimAngle)
+  const aimStickRef = useRef<HTMLDivElement | null>(null);
+  const aimKnobRef = useRef<HTMLDivElement | null>(null);
+  const aimPointerIdRef = useRef<number | null>(null);
+  const [aimLockedAngle, setAimLockedAngle] = useState<number>(0);
+
+  // Dedicated Right-Side Fire Button state (never alters or resets aimAngle)
+  const firePointerIdRef = useRef<number | null>(null);
+  const [isFireHeld, setIsFireHeld] = useState(false);
 
   const resetLeftJoystick = useCallback(() => {
     leftPointerIdRef.current = null;
@@ -165,36 +170,48 @@ export function PhaserArena({
     setFloatingJoy((prev) => (prev.visible ? { ...prev, visible: false, knobX: 0, knobY: 0 } : prev));
   }, []);
 
-  const resetRightStick = useCallback(() => {
-    rightPointerIdRef.current = null;
-    bridgeRef.current.attackHeld = false;
-    bridgeRef.current.aimAngle = null;
-    if (rightKnobRef.current) {
-      rightKnobRef.current.style.transform = 'translate3d(0px, 0px, 0)';
+  const releaseAimStick = useCallback(() => {
+    aimPointerIdRef.current = null;
+    // IMPORTANT: Do NOT reset bridgeRef.current.aimAngle to null!
+    // The established aim direction must remain stable after adjusting the aim control.
+    if (aimKnobRef.current) {
+      aimKnobRef.current.style.transform = 'translate3d(0px, 0px, 0)';
     }
   }, []);
 
+  const releaseFireButton = useCallback(() => {
+    firePointerIdRef.current = null;
+    bridgeRef.current.attackHeld = false;
+    setIsFireHeld(false);
+  }, []);
+
   // Global window pointer/touch/blur safety listeners so controls NEVER stay stuck
+  // and each pointer is released independently without interfering with other fingers
   useEffect(() => {
     const handleGlobalPointerEnd = (e: PointerEvent) => {
       if (leftPointerIdRef.current !== null && e.pointerId === leftPointerIdRef.current) {
         resetLeftJoystick();
       }
-      if (rightPointerIdRef.current !== null && e.pointerId === rightPointerIdRef.current) {
-        resetRightStick();
+      if (aimPointerIdRef.current !== null && e.pointerId === aimPointerIdRef.current) {
+        releaseAimStick();
+      }
+      if (firePointerIdRef.current !== null && e.pointerId === firePointerIdRef.current) {
+        releaseFireButton();
       }
     };
 
     const handleGlobalTouchEnd = (e: TouchEvent) => {
       if (e.touches.length === 0) {
         resetLeftJoystick();
-        resetRightStick();
+        releaseAimStick();
+        releaseFireButton();
       }
     };
 
     const handleGlobalResetAll = () => {
       resetLeftJoystick();
-      resetRightStick();
+      releaseAimStick();
+      releaseFireButton();
     };
 
     window.addEventListener('pointerup', handleGlobalPointerEnd);
@@ -212,18 +229,24 @@ export function PhaserArena({
       window.removeEventListener('blur', handleGlobalResetAll);
       document.removeEventListener('visibilitychange', handleGlobalResetAll);
     };
-  }, [resetLeftJoystick, resetRightStick]);
+  }, [resetLeftJoystick, releaseAimStick, releaseFireButton]);
 
-  // Also reset movement if game becomes paused
+  // Also reset movement and active hold states if game becomes paused (preserving aimAngle)
   useEffect(() => {
     if (isPaused) {
       resetLeftJoystick();
-      resetRightStick();
+      releaseAimStick();
+      releaseFireButton();
     }
-  }, [isPaused, resetLeftJoystick, resetRightStick]);
+  }, [isPaused, resetLeftJoystick, releaseAimStick, releaseFireButton]);
 
   const handleHudSync = useCallback((w: ActionWorldState) => {
-    (window as unknown as { __ULTIMO_DIA_WORLD__?: ActionWorldState }).__ULTIMO_DIA_WORLD__ = w;
+    const win = window as unknown as {
+      __ULTIMO_DIA_WORLD__?: ActionWorldState;
+      __ULTIMO_DIA_BRIDGE__?: ExternalControlBridge;
+    };
+    win.__ULTIMO_DIA_WORLD__ = w;
+    win.__ULTIMO_DIA_BRIDGE__ = bridgeRef.current;
     setHud(buildHudReadout(w));
     if (w.status === 'extracted' || w.status === 'dead') {
       onRunFinishedRef.current(w);
@@ -276,6 +299,7 @@ export function PhaserArena({
   // Floating Touch Joystick handlers (left 50% of the screen)
   const maxJoyRadius = 52;
   const deadzoneRadius = 6;
+  const leftStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const onLeftZonePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (leftPointerIdRef.current !== null) return;
@@ -293,6 +317,7 @@ export function PhaserArena({
       // Ignore synthetic events without active pointerId
     }
     leftPointerIdRef.current = e.pointerId;
+    leftStartRef.current = { x: e.clientX, y: e.clientY };
 
     setFloatingJoy({
       visible: true,
@@ -309,38 +334,40 @@ export function PhaserArena({
   const onLeftZonePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (leftPointerIdRef.current !== e.pointerId) return;
 
-    setFloatingJoy((prev) => {
-      if (!prev.visible) return prev;
-      const dx = e.clientX - prev.startX;
-      const dy = e.clientY - prev.startY;
-      const dist = Math.hypot(dx, dy);
+    const dx = e.clientX - leftStartRef.current.x;
+    const dy = e.clientY - leftStartRef.current.y;
+    const dist = Math.hypot(dx, dy);
 
-      if (dist <= deadzoneRadius) {
-        bridgeRef.current.joyMoveX = 0;
-        bridgeRef.current.joyMoveY = 0;
-        bridgeRef.current.sprintHeld = false;
-        return { ...prev, knobX: 0, knobY: 0 };
-      }
+    if (dist <= deadzoneRadius) {
+      bridgeRef.current.joyMoveX = 0;
+      bridgeRef.current.joyMoveY = 0;
+      bridgeRef.current.sprintHeld = false;
+      setFloatingJoy((prev) => (prev.visible ? { ...prev, knobX: 0, knobY: 0 } : prev));
+      return;
+    }
 
-      const clampedDist = Math.min(dist, maxJoyRadius);
-      const angle = Math.atan2(dy, dx);
+    const clampedDist = Math.min(dist, maxJoyRadius);
+    const angle = Math.atan2(dy, dx);
 
-      const kx = Math.cos(angle) * clampedDist;
-      const ky = Math.sin(angle) * clampedDist;
+    const kx = Math.cos(angle) * clampedDist;
+    const ky = Math.sin(angle) * clampedDist;
 
-      const nx = maxJoyRadius > 0 ? kx / maxJoyRadius : 0;
-      const ny = maxJoyRadius > 0 ? ky / maxJoyRadius : 0;
+    const nx = maxJoyRadius > 0 ? kx / maxJoyRadius : 0;
+    const ny = maxJoyRadius > 0 ? ky / maxJoyRadius : 0;
 
-      bridgeRef.current.joyMoveX = nx;
-      bridgeRef.current.joyMoveY = ny;
-      bridgeRef.current.sprintHeld = clampedDist > maxJoyRadius * 0.88;
+    bridgeRef.current.joyMoveX = nx;
+    bridgeRef.current.joyMoveY = ny;
+    bridgeRef.current.sprintHeld = clampedDist > maxJoyRadius * 0.88;
 
-      return {
-        ...prev,
-        knobX: kx,
-        knobY: ky,
-      };
-    });
+    setFloatingJoy((prev) =>
+      prev.visible
+        ? {
+            ...prev,
+            knobX: kx,
+            knobY: ky,
+          }
+        : prev
+    );
   };
 
   const onLeftZonePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -349,9 +376,9 @@ export function PhaserArena({
     }
   };
 
-  // Right Touch Aim & Attack Stick handlers
-  const updateRightStick = (clientX: number, clientY: number) => {
-    const el = rightStickRef.current;
+  // Dedicated Aim Stick handler (ONLY control responsible for changing aimAngle)
+  const updateAimStick = (clientX: number, clientY: number) => {
+    const el = aimStickRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
     const cx = rect.left + rect.width * 0.5;
@@ -364,15 +391,15 @@ export function PhaserArena({
     const clampedDist = Math.min(dist, maxRadius);
     const angle = Math.atan2(dy, dx);
 
-    if (dist > 7) {
+    if (dist > 4) {
       bridgeRef.current.aimAngle = angle;
+      setAimLockedAngle(angle);
     }
-    bridgeRef.current.attackHeld = true;
 
-    if (rightKnobRef.current) {
+    if (aimKnobRef.current) {
       const kx = Math.cos(angle) * clampedDist;
       const ky = Math.sin(angle) * clampedDist;
-      rightKnobRef.current.style.transform = `translate3d(${kx.toFixed(1)}px, ${ky.toFixed(1)}px, 0)`;
+      aimKnobRef.current.style.transform = `translate3d(${kx.toFixed(1)}px, ${ky.toFixed(1)}px, 0)`;
     }
   };
 
@@ -766,63 +793,135 @@ export function PhaserArena({
                 </button>
               </div>
 
-              {/* Combined Directional Aim & Attack Pad (Adapts label to Pistol or Machete) */}
+              {/* Dedicated Directional Aim Control (ONLY control that updates aimAngle) */}
               <div className="flex flex-col items-center gap-0.5">
                 <div
-                  ref={rightStickRef}
-                  role="button"
+                  ref={aimStickRef}
+                  role="group"
                   tabIndex={-1}
-                  data-testid="hud-aim-attack-stick"
-                  aria-label="Controle de Mira, Ataque e Recarga"
+                  data-testid="hud-aim-stick"
+                  aria-label="Controle Exclusivo de Mira Direcional"
                   onPointerDown={(e) => {
+                    e.stopPropagation();
                     try {
                       e.currentTarget.setPointerCapture(e.pointerId);
                     } catch {
                       // Ignore synthetic events without active pointerId
                     }
-                    rightPointerIdRef.current = e.pointerId;
-                    bridgeRef.current.queuedAttack = true;
-                    updateRightStick(e.clientX, e.clientY);
+                    aimPointerIdRef.current = e.pointerId;
+                    updateAimStick(e.clientX, e.clientY);
                   }}
                   onPointerMove={(e) => {
-                    if (rightPointerIdRef.current === e.pointerId) {
-                      updateRightStick(e.clientX, e.clientY);
+                    if (aimPointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      updateAimStick(e.clientX, e.clientY);
                     }
                   }}
                   onPointerUp={(e) => {
-                    if (rightPointerIdRef.current === e.pointerId) {
-                      resetRightStick();
+                    if (aimPointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      releaseAimStick();
                     }
                   }}
                   onPointerCancel={(e) => {
-                    if (rightPointerIdRef.current === e.pointerId) {
-                      resetRightStick();
+                    if (aimPointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      releaseAimStick();
                     }
                   }}
                   onLostPointerCapture={(e) => {
-                    if (rightPointerIdRef.current === e.pointerId) {
-                      resetRightStick();
+                    if (aimPointerIdRef.current === e.pointerId) {
+                      releaseAimStick();
                     }
                   }}
-                  className={`w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-[#171110]/65 border flex items-center justify-center touch-none relative ${
-                    hud.weapon === 'facao' ? 'border-[#d9822b]/80' : 'border-[#54221c]'
+                  className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-[#121619]/80 border border-[#38bdf8]/60 flex items-center justify-center touch-none relative shadow-lg"
+                >
+                  <div className="w-full h-[1px] bg-[#38bdf8]/25 absolute pointer-events-none" />
+                  <div className="h-full w-[1px] bg-[#38bdf8]/25 absolute pointer-events-none" />
+                  {/* Locked Aim Direction Indicator Ring */}
+                  <div
+                    style={{
+                      transform: `rotate(${((aimLockedAngle * 180) / Math.PI).toFixed(1)}deg)`,
+                    }}
+                    className="w-full h-full absolute pointer-events-none flex items-center justify-end pr-1"
+                  >
+                    <div className="w-2 h-2 rounded-full bg-[#38bdf8] shadow" />
+                  </div>
+                  <div
+                    ref={aimKnobRef}
+                    className="w-9 h-9 rounded-full bg-[#162736]/95 border border-[#38bdf8] shadow-md pointer-events-none flex items-center justify-center text-[8px] font-bold uppercase tracking-wider text-[#e0f2fe]"
+                  >
+                    Mirar
+                  </div>
+                </div>
+                <span className="text-[9px] text-[#93c5fd]/85 font-bold uppercase tracking-wider">
+                  Mira 360°
+                </span>
+              </div>
+
+              {/* Dedicated Right-Side Fire / Attack Button (NEVER changes, recalculates, or resets aim direction) */}
+              <div className="flex flex-col items-center gap-0.5">
+                <div
+                  role="button"
+                  tabIndex={-1}
+                  data-testid="hud-aim-attack-stick"
+                  data-fire-btn="true"
+                  aria-label="Botão de Disparo e Ataque"
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    try {
+                      e.currentTarget.setPointerCapture(e.pointerId);
+                    } catch {
+                      // Ignore synthetic events without active pointerId
+                    }
+                    firePointerIdRef.current = e.pointerId;
+                    setIsFireHeld(true);
+                    // Only trigger attack in the already-established aim direction!
+                    bridgeRef.current.queuedAttack = true;
+                    bridgeRef.current.attackHeld = true;
+                  }}
+                  onPointerMove={(e) => {
+                    if (firePointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      // Maintain continuous fire without touching aimAngle
+                      bridgeRef.current.attackHeld = true;
+                    }
+                  }}
+                  onPointerUp={(e) => {
+                    if (firePointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      releaseFireButton();
+                    }
+                  }}
+                  onPointerCancel={(e) => {
+                    if (firePointerIdRef.current === e.pointerId) {
+                      e.stopPropagation();
+                      releaseFireButton();
+                    }
+                  }}
+                  onLostPointerCapture={(e) => {
+                    if (firePointerIdRef.current === e.pointerId) {
+                      releaseFireButton();
+                    }
+                  }}
+                  className={`w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-[#171110]/85 border-2 flex items-center justify-center touch-none relative transition-transform ${
+                    isFireHeld ? 'scale-95' : ''
+                  } ${
+                    hud.weapon === 'facao' ? 'border-[#d9822b]' : 'border-[#c94a38]'
                   }`}
                 >
-                  <div className="w-full h-[1px] bg-[#3d1c18]/55 absolute pointer-events-none" />
-                  <div className="h-full w-[1px] bg-[#3d1c18]/55 absolute pointer-events-none" />
                   <div
-                    ref={rightKnobRef}
-                    className={`w-11 h-11 rounded-full shadow-md pointer-events-none flex items-center justify-center text-[9px] font-bold uppercase tracking-wider text-[#ebe5dc] border ${
+                    className={`w-12 h-12 sm:w-14 sm:h-14 rounded-full shadow-md pointer-events-none flex items-center justify-center text-[10px] font-bold uppercase tracking-wider text-[#ebe5dc] border ${
                       hud.weapon === 'facao'
-                        ? 'bg-[#6b3c14]/90 border-[#e09132]'
-                        : 'bg-[#6e1d16]/90 border-[#c94a38]'
+                        ? 'bg-[#6b3c14]/95 border-[#e09132]'
+                        : 'bg-[#6e1d16]/95 border-[#ef4444]'
                     }`}
                   >
                     {hud.weapon === 'facao' ? 'Golpear' : 'Atirar'}
                   </div>
                 </div>
-                <span className="text-[9px] text-[#b8afa4]/80 font-bold uppercase tracking-wider">
-                  {hud.weapon === 'facao' ? 'Cone / Golpe' : 'Mira / Recarga'}
+                <span className="text-[9px] text-[#b8afa4]/85 font-bold uppercase tracking-wider">
+                  {hud.weapon === 'facao' ? 'Golpe' : 'Disparo'}
                 </span>
               </div>
             </div>

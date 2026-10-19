@@ -4,14 +4,22 @@ import {
   applyDamageToPlayer,
   applyExtractionToStash,
   buildMinimapSnapshot,
+  computeEvacuationProgress,
   createDefaultInputState,
   createInitialPersistentStash,
   createInitialWorldState,
   createZombieFromArchetype,
+  evaluatePointVisibility,
+  executeEvacuation,
+  healShelterSurvivor,
   performAttack,
+  selectActiveSurvivor,
   stepWorld,
+  toggleFlashlight,
   triggerInteract,
   tryDirectObjectInteractAtWorldPoint,
+  upgradeShelterStation,
+  VISION_CONFIG,
   WEAPON_CONFIG,
   ZOMBIE_ARCHETYPE_CONFIG,
 } from '../src/action/actionRules.ts';
@@ -269,12 +277,15 @@ test('Top-Down Action: visão direcional e furtividade pelas costas de zumbis', 
   assert.ok(z.vx > 0);
 });
 
-test('Top-Down Action: zumbis comuns (vel 37, rotação parametrizada), facão (38 PV, 95 px ruído, 1 alvo) e parada imediata do joystick', () => {
+test('Top-Down Action: balanceamento entre Facão (22 PV, cadência controlada, 95 px ruído) e Pistola (24 PV, 480 px ruído) + parada imediata do joystick', () => {
   assert.equal(ZOMBIE_ARCHETYPE_CONFIG.lento.speed, 37);
   assert.ok(ZOMBIE_ARCHETYPE_CONFIG.corredor.turnRateRad > ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad);
   assert.ok(ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad > ZOMBIE_ARCHETYPE_CONFIG.bruto.turnRateRad);
-  assert.equal(WEAPON_CONFIG.facao.damage, 38);
+  assert.equal(WEAPON_CONFIG.facao.damage, 22);
+  assert.equal(WEAPON_CONFIG.facao.swingDuration, 0.14);
+  assert.ok(WEAPON_CONFIG.facao.cooldown >= 0.5);
   assert.equal(WEAPON_CONFIG.facao.noiseRadius, 95);
+  assert.equal(WEAPON_CONFIG.pistola.damage, 24);
   assert.equal(WEAPON_CONFIG.pistola.noiseRadius, 480);
 
   const world = createInitialWorldState('node_integrated_v2');
@@ -290,7 +301,7 @@ test('Top-Down Action: zumbis comuns (vel 37, rotação parametrizada), facão (
 
   const hitRes = performAttack(world);
   assert.equal(hitRes.hits, 1);
-  assert.equal(zFront.hp, zFront.maxHp - 38);
+  assert.equal(zFront.hp, zFront.maxHp - 22);
   assert.equal(zSecond.hp, zSecond.maxHp);
   assert.equal(world.noiseEvents[world.noiseEvents.length - 1].radius, 95);
 
@@ -312,10 +323,12 @@ test('Top-Down Action: zumbis comuns (vel 37, rotação parametrizada), facão (
   assert.equal(world.player.vy, 0);
 });
 
-test('Top-Down Action: transição telhado/interior, mira dinâmica Bullet Echo e toque direto em objetos mobile', () => {
+test('Top-Down Action: transição telhado/interior, portas arquitetônicas, mira dinâmica Bullet Echo e toque direto em objetos mobile', () => {
   const world = createInitialWorldState('node_roof_and_aim', 'vila_esperanca');
   const casaSantos = world.buildings.find((b) => b.id === 'bld_casa_santos')!;
   assert.equal(casaSantos.roofAlpha, 1);
+  assert.ok((casaSantos.doors?.length ?? 0) >= 1);
+  assert.ok((casaSantos.windows?.length ?? 0) >= 1);
 
   // Entra pela porta da casa -> telhado desaparece suavemente até 0
   world.player.x = 340;
@@ -367,6 +380,93 @@ test('Top-Down Action: transição telhado/interior, mira dinâmica Bullet Echo 
   assert.equal(tapCar.consumed, true);
   assert.equal(pickupSpot.looted, true);
 });
+
+test('Top-Down Action: campo de visão tático (Bullet Echo FOV), oclusão por paredes, efeito real da lanterna e sinais acústicos discretos', () => {
+  const world = createInitialWorldState('node_fov_acoustic', 'centro_comercial');
+  world.obstacles = [];
+  world.buildings = [];
+  world.player.x = 500;
+  world.player.y = 500;
+  world.player.facingAngle = 0;
+  world.ambientDarkness = 0.85;
+
+  const targetX = 780;
+  const targetY = 500;
+  assert.equal(world.player.flashlight.enabled, true);
+  assert.equal(evaluatePointVisibility(world, targetX, targetY), 'visible');
+
+  // Desliga a lanterna: alcance reduz significativamente na escuridão
+  toggleFlashlight(world);
+  assert.equal(world.player.flashlight.enabled, false);
+  assert.equal(evaluatePointVisibility(world, targetX, targetY), 'hidden');
+
+  // Religa a lanterna, mas adiciona parede sólida bloqueando a linha de visão
+  toggleFlashlight(world);
+  world.obstacles = [{ id: 'fov_wall', x: 650, y: 440, width: 18, height: 120, kind: 'wall' }];
+  assert.equal(evaluatePointVisibility(world, targetX, targetY), 'hidden');
+
+  // Zumbi barulhento atrás da parede gera sinal acústico direcional sem ficar visível
+  const hiddenRunner = createZombieFromArchetype('z_noisy_hidden', 'corredor', 740, 500);
+  hiddenRunner.alertState = 'hunting';
+  world.zombies = [hiddenRunner];
+
+  stepWorld(world, createDefaultInputState(), 0.1);
+  assert.equal(hiddenRunner.isVisibleToPlayer, false);
+  assert.equal(hiddenRunner.visibilityState, 'hidden');
+  assert.ok(world.acousticCues.length >= 1);
+  assert.ok(VISION_CONFIG.flashlightBonusRange > 100);
+});
+
+test('Top-Down Action: progressão do abrigo, sobreviventes, estações, avanço de dias e objetivo de evacuação', () => {
+  let stash = createInitialPersistentStash();
+  assert.equal(stash.day, 1);
+  assert.equal(stash.survivors?.length, 3);
+  assert.ok(stash.upgrades !== undefined);
+
+  stash.totalStash.materiais = 25;
+  stash.totalStash.medicamentos = 10;
+  stash.totalStash.comida = 20;
+  stash.totalStash.municao = 25;
+
+  const upOficina = upgradeShelterStation(stash, 'oficina');
+  assert.equal(upOficina.ok, true);
+  stash = upOficina.stash;
+
+  const worldWithBonus = createInitialWorldState('node_shelter_bonus', 'vila_esperanca', stash);
+  assert.equal(worldWithBonus.maxCarryCapacity, 30);
+
+  const upEnf = upgradeShelterStation(stash, 'enfermaria');
+  assert.equal(upEnf.ok, true);
+  stash = upEnf.stash;
+
+  stash = selectActiveSurvivor(stash, 'surv_elena');
+
+  const worldElena = createInitialWorldState('node_elena_run', 'vila_esperanca', stash);
+  assert.equal(worldElena.player.maxHp, 115);
+
+  worldElena.player.hp = 60;
+  worldElena.status = 'extracted';
+  stash = applyExtractionToStash(stash, worldElena);
+  assert.equal(stash.day, 2);
+  const elenaAfter = stash.survivors!.find((s) => s.id === 'surv_elena')!;
+  assert.ok(elenaAfter.hp < elenaAfter.maxHp);
+  assert.equal(elenaAfter.status, 'ferido');
+
+  const healed = healShelterSurvivor(stash, 'surv_elena');
+  assert.equal(healed.ok, true);
+  stash = healed.stash;
+  assert.ok(stash.survivors!.find((s) => s.id === 'surv_elena')!.hp > elenaAfter.hp);
+
+  stash.runsExtracted = 2;
+  stash = upgradeShelterStation(stash, 'torre_radio').stash;
+  assert.ok(computeEvacuationProgress(stash) > 50);
+
+  const evac = executeEvacuation(stash);
+  assert.equal(evac.ok, true);
+  assert.equal(evac.stash.evacuationCompleted, true);
+});
+
+
 
 
 

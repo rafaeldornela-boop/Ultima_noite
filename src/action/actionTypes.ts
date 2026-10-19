@@ -39,6 +39,31 @@ export interface ObstacleRect {
   label?: string;
 }
 
+export type VisibilityLevel = 'visible' | 'penumbra' | 'hidden';
+
+export interface BuildingDoor {
+  id: string;
+  buildingId: string;
+  buildingName: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  orientation: 'horizontal' | 'vertical';
+  side: 'north' | 'south' | 'east' | 'west';
+  label: string;
+}
+
+export interface BuildingWindow {
+  id: string;
+  buildingId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  orientation: 'horizontal' | 'vertical';
+}
+
 export interface BuildingZone {
   id: string;
   name: string;
@@ -49,6 +74,8 @@ export interface BuildingZone {
   floorColor: number;
   roofColor?: number;
   roofAlpha?: number; // 1.0 when player is outside (roof visible hiding interior), smoothly fades to 0.0 when player enters
+  doors?: BuildingDoor[];
+  windows?: BuildingWindow[];
 }
 
 export interface LootSpot {
@@ -65,6 +92,7 @@ export interface LootSpot {
   radius: number;
   looted: boolean;
   searchState?: LootSearchState;
+  isVisibleToPlayer?: boolean;
   contents: Partial<ActionLootBag>;
 }
 
@@ -119,6 +147,7 @@ export interface PlayerEntity {
   attackCooldown: number;
   meleeSwingTimer: number;
   hurtFlashTimer: number;
+  recoilBloom?: number;
   flashlight: FlashlightState;
   healing: HealingState | null;
   isInsideBuilding: string | null;
@@ -141,6 +170,10 @@ export interface ZombieEntity {
   alertState: 'idle' | 'patrol' | 'investigating' | 'hunting';
   alertTimer: number;
   targetPoint: { x: number; y: number } | null;
+  visibility?: VisibilityLevel;
+  visibilityState?: VisibilityLevel;
+  visibilityLevel?: VisibilityLevel;
+  lastHeardTimer?: number;
   hp: number;
   maxHp: number;
   speed: number;
@@ -156,6 +189,8 @@ export interface ZombieEntity {
   dead: boolean;
   deathTimer: number; // For 0.35s KO topple/dissolve transition
   flankSign: number; // +1 or -1 for corredor weaving
+  isVisibleToPlayer?: boolean;
+  isInsideBuildingId?: string | null;
 }
 
 export interface BulletEntity {
@@ -216,6 +251,18 @@ export interface NoiseEvent {
   source: 'gunshot' | 'sprint' | 'loot' | 'melee';
 }
 
+export interface AcousticCue {
+  id: string;
+  angle: number; // quantized direction from player to sound source (radians)
+  angleRad?: number;
+  distanceBand: 'perto' | 'medio' | 'longe';
+  approxX?: number;
+  approxY?: number;
+  intensity: number; // 0..1
+  ttl?: number;
+  source?: string;
+}
+
 export interface ActiveLootingState {
   spotId: string;
   progress: number; // 0..duration
@@ -227,8 +274,9 @@ export interface ActionWorldState {
   districtId: DistrictId;
   districtName: string;
   timeOfDay: TimeOfDay;
-  dayNightClock: number; // seconds into expedition
-  ambientDarkness: number; // 0.08 (bright day) to 0.45 (night)
+  dayNightClock: number; // seconds into expedition cycle [0..180)
+  formattedClock?: string; // e.g. "17:30"
+  ambientDarkness: number; // 0.10 (bright day) to 0.44 (night)
   isInsideBuilding: boolean;
   currentBuildingName: string | null;
   status: RunStatus;
@@ -243,6 +291,11 @@ export interface ActionWorldState {
   lootSpots: LootSpot[];
   obstacles: ObstacleRect[];
   buildings: BuildingZone[];
+  doors?: BuildingDoor[];
+  nearbyDoor?: BuildingDoor | null;
+  acousticCues: AcousticCue[];
+  nightSpawnTimer?: number;
+  nightReinforcementsSpawned?: number;
   extractionZone: ExtractionZone;
   runLoot: ActionLootBag;
   maxCarryCapacity: number;
@@ -256,6 +309,28 @@ export interface ActionWorldState {
   noiseEvents: NoiseEvent[];
 }
 
+export interface RescuedSurvivorProfile {
+  id: string;
+  name: string;
+  role: string;
+  bonusLabel: string;
+  districtId: DistrictId;
+}
+
+export type ShelterUpgradeId = 'oficina' | 'enfermaria' | 'torre_radio' | 'muralha';
+
+export type ShelterUpgradeState = Record<ShelterUpgradeId, number>;
+
+export interface ShelterSurvivor {
+  id: string;
+  name: string;
+  role: string;
+  hp: number;
+  maxHp: number;
+  status: 'saudavel' | 'ferido' | 'exausto' | 'morto';
+  runsCompleted?: number;
+}
+
 export interface PersistentShelterStash {
   schemaVersion: number;
   totalStash: ActionLootBag;
@@ -264,11 +339,22 @@ export interface PersistentShelterStash {
   runsDied: number;
   totalZombiesKilled: number;
   extractedRunIds: string[];
+  day?: number;
+  survivors?: ShelterSurvivor[];
+  activeSurvivorId?: string;
+  upgrades?: ShelterUpgradeState;
+  evacuationProgress?: number;
+  shelterLog?: string[];
+  survivorsRescued?: number;
+  rescuedSurvivorIds?: string[];
+  evacuationStage?: number; // 0..4 (4 = Evacuation Convoy Ready / Completed)
+  evacuationCompleted?: boolean;
   lastRunSummary: {
     outcome: 'extracted' | 'dead';
     lootGained: ActionLootBag;
     zombiesKilled: number;
     durationSeconds: number;
+    rescuedSurvivorName?: string;
   } | null;
   updatedAt: string;
 }

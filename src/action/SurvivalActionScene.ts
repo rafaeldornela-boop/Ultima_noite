@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import {
   createDefaultInputState,
   findInteractableAtWorldPoint,
+  getEffectiveVisionRanges,
   getRayObstacleDistance,
   isSegmentBlockedByWall,
   stepWorld,
@@ -231,14 +232,7 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.buildStaticEnvironment();
     this.syncEntitySprites();
 
-    // Pointer listeners on canvas (supports tapping directly on contextual objects + desktop mouse)
-    this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
-      if (pointer.wasTouch) return;
-      this.mouseScreenX = pointer.x;
-      this.mouseScreenY = pointer.y;
-      this.hasMouseMoved = true;
-    });
-
+    // Pointer listeners on canvas (supports tapping directly on contextual objects without altering aim direction)
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       const worldPoint = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
 
@@ -251,15 +245,6 @@ export class SurvivalActionScene extends Phaser.Scene {
       if (hitInteractable) {
         this.bridge.queuedInteract = true;
         return;
-      }
-
-      // Desktop mouse aiming/attacking (ignore touch pointers so mobile sticks have exclusive control)
-      if (!pointer.wasTouch && pointer.button === 0) {
-        this.mouseScreenX = pointer.x;
-        this.mouseScreenY = pointer.y;
-        this.hasMouseMoved = true;
-        this.mouseDown = true;
-        this.mouseJustPressed = true;
       }
     });
 
@@ -296,7 +281,6 @@ export class SurvivalActionScene extends Phaser.Scene {
         this.bridge.joyMoveY = 0;
         this.bridge.attackHeld = false;
         this.bridge.sprintHeld = false;
-        this.bridge.aimAngle = null;
       }
     };
 
@@ -466,14 +450,18 @@ export class SurvivalActionScene extends Phaser.Scene {
       });
     }
 
-    // 3. Building Interiors (Tiled Floors, Thresholds, Environmental Debris & Subtle Stencil Markings)
+    // 3. Building Interiors (Tiled Floors, Architectural Doors, Windows & Stencil Markings)
     for (const bld of this.worldState.buildings) {
       // Cast exterior building drop shadow
       g.fillStyle(0x080706, 0.65);
       g.fillRect(bld.x + 8, bld.y + 10, bld.width, bld.height);
 
       const tileFrame =
-        bld.id === 'bld_mercado' ? 3 : bld.id === 'bld_farmacia' ? 4 : 5;
+        bld.id.includes('mercado') || bld.id.includes('mercearia')
+          ? 3
+          : bld.id.includes('farmacia') || bld.id.includes('pronto') || bld.id.includes('laboratorio')
+          ? 4
+          : 5;
 
       if (hasTileset) {
         const ts = this.add
@@ -495,6 +483,42 @@ export class SurvivalActionScene extends Phaser.Scene {
       // Interior grime vignette along walls
       g.lineStyle(6, 0x0d0b09, 0.65);
       g.strokeRect(bld.x + 3, bld.y + 3, bld.width - 6, bld.height - 6);
+
+      // Render explicit architectural Doorways & Threshold Mats (visible inside & outside)
+      for (const door of bld.doors ?? []) {
+        g.fillStyle(0x3b2a1d, 0.95);
+        g.fillRect(door.x - 2, door.y - 2, door.width + 4, door.height + 4);
+        g.lineStyle(1.8, 0xd9822b, 0.85);
+        g.strokeRect(door.x - 1, door.y - 1, door.width + 2, door.height + 2);
+
+        // Open wooden/metal door leaf swung ajar inside the building
+        g.fillStyle(0x6b4c35, 0.95);
+        if (door.orientation === 'horizontal') {
+          const leafY = door.side === 'south' ? door.y - 26 : door.y + door.height + 2;
+          g.fillRect(door.x + 2, leafY, 7, 24);
+          g.lineStyle(1, 0xfbbf24, 0.7);
+          g.strokeRect(door.x + 2, leafY, 7, 24);
+        } else {
+          const leafX = door.side === 'east' ? door.x - 26 : door.x + door.width + 2;
+          g.fillRect(leafX, door.y + 2, 24, 7);
+          g.lineStyle(1, 0xfbbf24, 0.7);
+          g.strokeRect(leafX, door.y + 2, 24, 7);
+        }
+      }
+
+      // Render architectural Windows along wall gaps
+      for (const win of bld.windows ?? []) {
+        g.fillStyle(0x1e293b, 0.85);
+        g.fillRect(win.x, win.y, win.width, win.height);
+        g.lineStyle(1.4, 0x64748b, 0.8);
+        g.strokeRect(win.x, win.y, win.width, win.height);
+        g.lineStyle(1, 0x94a3b8, 0.55);
+        if (win.orientation === 'horizontal') {
+          g.lineBetween(win.x + 4, win.y + win.height * 0.5, win.x + win.width - 4, win.y + win.height * 0.5);
+        } else {
+          g.lineBetween(win.x + win.width * 0.5, win.y + 4, win.x + win.width * 0.5, win.y + win.height - 4);
+        }
+      }
 
       // Subtle floor stencil label (diegetic painted floor marking)
       const txt = this.add.text(bld.x + 28, bld.y + 26, bld.name.toUpperCase(), {
@@ -685,17 +709,8 @@ export class SurvivalActionScene extends Phaser.Scene {
     input.moveX = Math.abs(this.bridge.joyMoveX) > 0.05 ? this.bridge.joyMoveX : keyMoveX;
     input.moveY = Math.abs(this.bridge.joyMoveY) > 0.05 ? this.bridge.joyMoveY : keyMoveY;
 
-    if (this.bridge.aimAngle !== null) {
+    if (this.bridge.aimAngle !== null && Number.isFinite(this.bridge.aimAngle)) {
       input.aimAngle = this.bridge.aimAngle;
-    } else if (this.hasMouseMoved && (this.mouseDown || this.mouseJustPressed)) {
-      const worldPoint = this.cameras.main.getWorldPoint(
-        this.mouseScreenX,
-        this.mouseScreenY
-      );
-      input.aimAngle = Math.atan2(
-        worldPoint.y - this.worldState.player.y,
-        worldPoint.x - this.worldState.player.x
-      );
     }
 
     input.attackHeld =
@@ -1054,8 +1069,8 @@ export class SurvivalActionScene extends Phaser.Scene {
       dG.strokeRect(x - 18, y - 12, 36, 22);
     }
 
-    // State indicator: Available vs Searching vs Searched
-    if (!looted) {
+    // State indicator: Available vs Searching vs Searched (only shown when object is inside player's visible FOV)
+    if (!looted && (spot.isVisibleToPlayer || isBeingLooted || isNearest)) {
       if (isBeingLooted && this.worldState.activeLooting) {
         const progress = Math.min(
           1,
@@ -1077,7 +1092,7 @@ export class SurvivalActionScene extends Phaser.Scene {
         dG.lineStyle(2, 0xf59e0b, 0.65 + pulse * 0.3);
         dG.strokeCircle(x, y, spot.radius * 0.68);
       } else {
-        // Discreet glint showing object has not been searched yet
+        // Discreet glint showing object has not been searched yet (only when visually seen)
         dG.lineStyle(1.2, 0xd9822b, 0.22 + pulse * 0.2);
         dG.strokeCircle(x, y, 16);
       }
@@ -1155,6 +1170,14 @@ export class SurvivalActionScene extends Phaser.Scene {
       rG.strokeRect(rx + 4, ry + 4, rw - 8, rh - 8);
       rG.lineStyle(1, ridgeColor, alpha * 0.55);
       rG.strokeRect(rx + 6, ry + 6, rw - 12, rh - 12);
+
+      // 7. Exterior Doorway Canopies & Entrance Thresholds (drawn on top of roof eaves so entrances are clearly visible from outside)
+      for (const door of bld.doors ?? []) {
+        rG.fillStyle(0x1f1915, alpha * 0.96);
+        rG.fillRect(door.x - 2, door.y - 2, door.width + 4, door.height + 4);
+        rG.lineStyle(2, 0xf59e0b, alpha * 0.9);
+        rG.strokeRect(door.x - 1, door.y - 1, door.width + 2, door.height + 2);
+      }
     }
   }
 
@@ -1185,7 +1208,18 @@ export class SurvivalActionScene extends Phaser.Scene {
     for (const spot of w.lootSpots) {
       const isBeingLooted = w.activeLooting?.spotId === spot.id;
       const isNearest = w.activePrompt?.targetType === 'loot' && w.activePrompt.id === spot.id;
-      this.renderLootObjectVisual(dG, spot, isNearest, isBeingLooted, pulse);
+      // Only render interactive loot details if visible or inside an open roof building
+      const insideClosedBuilding = w.buildings.some(
+        (b) =>
+          (b.roofAlpha ?? 1) > 0.75 &&
+          spot.x > b.x + 12 &&
+          spot.x < b.x + b.width - 12 &&
+          spot.y > b.y + 12 &&
+          spot.y < b.y + b.height - 12
+      );
+      if (!insideClosedBuilding) {
+        this.renderLootObjectVisual(dG, spot, isNearest, isBeingLooted, pulse);
+      }
 
       if (isBeingLooted && w.activeLooting) {
         const progress = Math.min(1, w.activeLooting.progress / w.activeLooting.duration);
@@ -1223,8 +1257,9 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     const engagedSet = new Set(p.engagedTargetIds ?? []);
 
-    // 3. Update Zombie Pixel-Art Sprites, Shadows, Windup Telegraphs, Health Bars & Bullet Echo Engagement Highlights
+    // 3. Update Zombie Sprites with Tactical FOV Visibility (Visible vs Penumbra vs Hidden)
     for (const z of w.zombies) {
+      const vis = z.visibility ?? 'hidden';
       const spr = this.zombieSpriteMap.get(z.id);
       if (spr) {
         spr.setPosition(z.x, z.y);
@@ -1232,21 +1267,35 @@ export class SurvivalActionScene extends Phaser.Scene {
         spr.setFrame(this.computeZombieFrame(z));
         spr.setDepth(z.dead ? 5 : 14);
 
-        if (z.hitFlashTimer > 0 && !this.bridge?.reducedEffects) {
-          spr.setTintFill(0xf5f0e6);
-        } else {
+        if (z.dead) {
+          spr.setVisible(vis !== 'hidden');
           spr.clearTint();
+          spr.setAlpha(vis === 'visible' ? 0.9 : 0.38);
+        } else if (vis === 'hidden') {
+          // Do NOT expose unseen zombies behind walls or in darkness
+          spr.setVisible(false);
+        } else if (vis === 'penumbra') {
+          spr.setVisible(true);
+          spr.setTint(0x475569);
+          spr.setAlpha(0.45);
+        } else {
+          spr.setVisible(true);
+          if (z.hitFlashTimer > 0 && !this.bridge?.reducedEffects) {
+            spr.setTintFill(0xf5f0e6);
+          } else {
+            spr.clearTint();
+          }
+          spr.setAlpha(1);
         }
-        spr.setAlpha(z.dead ? 0.92 : 1);
       }
 
-      if (!z.dead) {
-        // Ground contact shadow under living zombie
-        sG.fillStyle(0x050404, 0.62);
+      if (!z.dead && vis !== 'hidden') {
+        // Ground contact shadow under visible/penumbra zombie
+        sG.fillStyle(0x050404, vis === 'visible' ? 0.62 : 0.28);
         sG.fillEllipse(z.x + 2, z.y + 4, z.radius * 1.9, z.radius * 1.45);
 
-        // Bullet Echo Target Engagement Highlight when zombie is inside valid attack cone
-        if (engagedSet.has(z.id)) {
+        // Bullet Echo Target Engagement Highlight when zombie is inside valid attack cone and visible
+        if (vis === 'visible' && engagedSet.has(z.id)) {
           const isPrimary = p.engagedTargetId === z.id;
           const ringR = z.radius + (isPrimary ? 7 : 5);
           const engColor = isPrimary ? 0xef4444 : 0xf97316;
@@ -1266,7 +1315,7 @@ export class SurvivalActionScene extends Phaser.Scene {
           }
         }
 
-        // Attack windup danger telegraph
+        // Attack windup danger telegraph (when visible)
         if (z.isWindingUp) {
           dG.lineStyle(2, 0xb93829, 0.85);
           dG.strokeCircle(z.x, z.y, z.attackRange);
@@ -1274,8 +1323,8 @@ export class SurvivalActionScene extends Phaser.Scene {
           dG.fillCircle(z.x, z.y, z.attackRange);
         }
 
-        // Diegetic slim health bar for wounded zombies
-        if (z.hp < z.maxHp) {
+        // Diegetic slim health bar for wounded visible zombies
+        if (vis === 'visible' && z.hp < z.maxHp) {
           const barW = z.radius * 2.0;
           const barX = z.x - barW * 0.5;
           const barY = z.y - z.radius - 11;
@@ -1311,7 +1360,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       } else if (!isMachete && p.reloadTimer > 0) {
         frame = 7; // Pistol reload frame
       } else if (isMachete && p.meleeSwingTimer > 0) {
-        frame = p.meleeSwingTimer > 0.11 ? 14 : 15; // 2-stage machete cleave
+        frame = p.meleeSwingTimer > 0.08 ? 14 : 15; // 2-stage machete cleave
       } else if (speed > 12) {
         const stepFrame = Math.floor(this.walkAnimTime) % 4;
         frame = (isMachete ? 10 : 2) + stepFrame;
@@ -1373,13 +1422,13 @@ export class SurvivalActionScene extends Phaser.Scene {
       const originX = p.x + pCos * 10;
       const originY = p.y + pSin * 10;
 
-      // 1. Wall-clipped translucent Bullet Echo funnel body
+      // 1. Obstacle-clipped translucent Bullet Echo funnel body
       aG.fillStyle(coneColor, fillAlpha);
       aG.beginPath();
       aG.moveTo(originX, originY);
       for (let i = 0; i <= raySteps; i++) {
         const a = p.facingAngle - halfCone + (i / raySteps) * (halfCone * 2);
-        const rDist = getRayObstacleDistance(p.x, p.y, a, maxSight, w.obstacles, true);
+        const rDist = getRayObstacleDistance(p.x, p.y, a, maxSight, w.obstacles, false);
         aG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
       }
       aG.closePath();
@@ -1388,8 +1437,8 @@ export class SurvivalActionScene extends Phaser.Scene {
       // 2. Crisp Left & Right Funnel Boundary Rays
       const leftAngle = p.facingAngle - halfCone;
       const rightAngle = p.facingAngle + halfCone;
-      const leftDist = getRayObstacleDistance(p.x, p.y, leftAngle, maxSight, w.obstacles, true);
-      const rightDist = getRayObstacleDistance(p.x, p.y, rightAngle, maxSight, w.obstacles, true);
+      const leftDist = getRayObstacleDistance(p.x, p.y, leftAngle, maxSight, w.obstacles, false);
+      const rightDist = getRayObstacleDistance(p.x, p.y, rightAngle, maxSight, w.obstacles, false);
 
       aG.lineStyle(1.9, edgeColor, strokeAlpha);
       aG.lineBetween(
@@ -1412,7 +1461,7 @@ export class SurvivalActionScene extends Phaser.Scene {
         p.facingAngle,
         maxSight,
         w.obstacles,
-        true
+        false
       );
       const outerArcR = Math.min(maxSight, centerDist, leftDist, rightDist);
       if (outerArcR > 40) {
@@ -1440,7 +1489,7 @@ export class SurvivalActionScene extends Phaser.Scene {
         );
       }
     } else {
-      // MACHETE AIM: Directional Attack Cone (86px reach, 65 deg opening) clipped against walls
+      // MACHETE AIM: Directional Attack Cone (84px reach, 65 deg opening) clipped against obstacles
       const reach = WEAPON_CONFIG.facao.reach;
       const halfCone = WEAPON_CONFIG.facao.coneAngleRad * 0.5;
       const raySteps = 16;
@@ -1457,7 +1506,7 @@ export class SurvivalActionScene extends Phaser.Scene {
 
       for (let i = 0; i <= raySteps; i++) {
         const a = p.facingAngle - halfCone + (i / raySteps) * (halfCone * 2);
-        const rDist = getRayObstacleDistance(p.x, p.y, a, reach, w.obstacles, true);
+        const rDist = getRayObstacleDistance(p.x, p.y, a, reach, w.obstacles, false);
         aG.lineTo(p.x + Math.cos(a) * rDist, p.y + Math.sin(a) * rDist);
       }
 
@@ -1469,7 +1518,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       if (isSwinging) {
         const swingRatio = 1 - p.meleeSwingTimer / WEAPON_CONFIG.facao.swingDuration;
         const sweepAngle = p.facingAngle - halfCone + swingRatio * (halfCone * 2);
-        const sweepDist = getRayObstacleDistance(p.x, p.y, sweepAngle, reach, w.obstacles, true);
+        const sweepDist = getRayObstacleDistance(p.x, p.y, sweepAngle, reach, w.obstacles, false);
 
         aG.lineStyle(3.5, 0xf8fafc, 0.9 * (1 - swingRatio * 0.4));
         aG.beginPath();
@@ -1545,92 +1594,171 @@ export class SurvivalActionScene extends Phaser.Scene {
       aG.fillRect(p.x - 6, crossY - 2, 12, 4);
     }
 
-    // 8. Balanced Atmospheric Darkness & Directional Flashlight Cone (Bullet Echo / Zomboid clarity)
-    this.renderAtmosphericLighting(lG);
+    // 8. Bullet Echo Tactical Field of View, Penumbra, Flashlight Beam & Discrete Acoustic Cues
+    this.renderAtmosphericLighting(lG, aG);
   }
 
-  private renderAtmosphericLighting(lG: Phaser.GameObjects.Graphics): void {
+  private renderAtmosphericLighting(
+    lG: Phaser.GameObjects.Graphics,
+    aG: Phaser.GameObjects.Graphics
+  ): void {
     const w = this.worldState;
     const p = w.player;
 
-    // Keep maximum ambient darkness capped at 0.42 so walls, doors, furniture, cars, and zombies are always identifiable
-    const baseDarkness = Math.min(0.42, Math.max(0.10, w.ambientDarkness));
-    const flashlightActive = p.flashlight.enabled && p.flashlight.battery > 0;
-    const closeAuraRadius = flashlightActive ? 64 : 52;
-    const outerCoverRadius = 1500;
+    const {
+      closeRadius,
+      coneRange,
+      coneAngleRad,
+      flashlightActive,
+      flashlightRange,
+      flashlightConeAngleRad,
+    } = getEffectiveVisionRanges(w);
 
+    const baseDarkness = Math.min(0.62, Math.max(0.18, w.ambientDarkness));
+    const penumbraDarkness = baseDarkness * 0.52;
+    const outerCoverRadius = 1550;
+
+    // Effective forward visioncone opening & range
+    const activeForwardRange = flashlightActive ? flashlightRange : coneRange;
+    const activeHalfCone = (flashlightActive ? flashlightConeAngleRad : coneAngleRad) * 0.5;
+    const a1 = p.facingAngle - activeHalfCone;
+    const a2 = p.facingAngle + activeHalfCone;
+
+    // 1. Outer Darkness Layer outside the forward cone and outside the close perception ring
+    lG.fillStyle(0x05070a, baseDarkness);
+    lG.beginPath();
+    lG.arc(p.x, p.y, outerCoverRadius, a2, a1 + Math.PI * 2, false);
+    lG.arc(p.x, p.y, closeRadius, a1 + Math.PI * 2, a2, true);
+    lG.closePath();
+    lG.fillPath();
+
+    // 2. Outer Darkness Layer beyond the forward perception/flashlight range
+    lG.fillStyle(0x05070a, baseDarkness);
+    lG.beginPath();
+    lG.arc(p.x, p.y, outerCoverRadius, a1, a2, false);
+    lG.arc(p.x, p.y, activeForwardRange, a2, a1, true);
+    lG.closePath();
+    lG.fillPath();
+
+    // 3. Obstacle-Cast Shadow Polygons inside the forward cone (walls, cars, furniture block light & sight)
+    const raySteps = 28;
+    for (let i = 0; i < raySteps; i++) {
+      const ra1 = a1 + (i / raySteps) * (activeHalfCone * 2);
+      const ra2 = a1 + ((i + 1) / raySteps) * (activeHalfCone * 2);
+      const d1 = getRayObstacleDistance(p.x, p.y, ra1, activeForwardRange, w.obstacles, false);
+      const d2 = getRayObstacleDistance(p.x, p.y, ra2, activeForwardRange, w.obstacles, false);
+
+      if (d1 < activeForwardRange - 4 || d2 < activeForwardRange - 4) {
+        lG.fillStyle(0x05070a, Math.min(0.72, baseDarkness + 0.14));
+        lG.beginPath();
+        lG.moveTo(p.x + Math.cos(ra1) * d1, p.y + Math.sin(ra1) * d1);
+        lG.lineTo(
+          p.x + Math.cos(ra1) * activeForwardRange,
+          p.y + Math.sin(ra1) * activeForwardRange
+        );
+        lG.lineTo(
+          p.x + Math.cos(ra2) * activeForwardRange,
+          p.y + Math.sin(ra2) * activeForwardRange
+        );
+        lG.lineTo(p.x + Math.cos(ra2) * d2, p.y + Math.sin(ra2) * d2);
+        lG.closePath();
+        lG.fillPath();
+      }
+    }
+
+    // 4. Penumbra Transition Band around close peripheral awareness ring
+    lG.lineStyle(18, 0x05070a, penumbraDarkness);
+    lG.strokeCircle(p.x, p.y, closeRadius + 9);
+
+    // 5. Directional Flashlight Beam Illumination (distinct warm high-visibility beam when ON)
     if (flashlightActive) {
-      const beamLength = p.flashlight.range;
-      const halfCone = p.flashlight.coneAngle * 0.5;
-      const a1 = p.facingAngle - halfCone;
-      const a2 = p.facingAngle + halfCone;
-
-      // 1a. Peripheral shadow outside the flashlight cone & outside the close survivor aura
-      lG.fillStyle(0x06080b, Math.min(0.48, baseDarkness + 0.06));
-      lG.beginPath();
-      lG.arc(p.x, p.y, outerCoverRadius, a2, a1 + Math.PI * 2, false);
-      lG.arc(p.x, p.y, closeAuraRadius, a1 + Math.PI * 2, a2, true);
-      lG.closePath();
-      lG.fillPath();
-
-      // 1b. Shadow beyond the flashlight's reach inside the forward sector
-      lG.fillStyle(0x06080b, Math.min(0.48, baseDarkness + 0.06));
-      lG.beginPath();
-      lG.arc(p.x, p.y, outerCoverRadius, a1, a2, false);
-      lG.arc(p.x, p.y, beamLength, a2, a1, true);
-      lG.closePath();
-      lG.fillPath();
-
-      // 2. Wall-clipped directional warm tungsten flashlight beam
-      const raySteps = 18;
-      lG.fillStyle(0xfef3c7, 0.16);
-      lG.lineStyle(1.2, 0xfde68a, 0.28);
+      lG.fillStyle(0xfef3c7, 0.17);
+      lG.lineStyle(1.4, 0xfde68a, 0.32);
       lG.beginPath();
       lG.moveTo(p.x, p.y);
       for (let i = 0; i <= raySteps; i++) {
-        const ra = a1 + (i / raySteps) * (halfCone * 2);
-        const rDist = getRayObstacleDistance(p.x, p.y, ra, beamLength, w.obstacles, true);
+        const ra = a1 + (i / raySteps) * (activeHalfCone * 2);
+        const rDist = getRayObstacleDistance(
+          p.x,
+          p.y,
+          ra,
+          flashlightRange,
+          w.obstacles,
+          false
+        );
         lG.lineTo(p.x + Math.cos(ra) * rDist, p.y + Math.sin(ra) * rDist);
       }
       lG.closePath();
       lG.fillPath();
       lG.strokePath();
 
-      // Focused center beam highlight
-      const coreHalf = halfCone * 0.45;
-      lG.fillStyle(0xffffff, 0.12);
+      // High-intensity center flashlight core
+      const coreHalf = activeHalfCone * 0.42;
+      lG.fillStyle(0xffffff, 0.11);
       lG.beginPath();
       lG.moveTo(p.x, p.y);
-      for (let i = 0; i <= 8; i++) {
-        const ra = p.facingAngle - coreHalf + (i / 8) * (coreHalf * 2);
-        const rDist = getRayObstacleDistance(p.x, p.y, ra, beamLength * 0.72, w.obstacles, true);
+      for (let i = 0; i <= 10; i++) {
+        const ra = p.facingAngle - coreHalf + (i / 10) * (coreHalf * 2);
+        const rDist = getRayObstacleDistance(
+          p.x,
+          p.y,
+          ra,
+          flashlightRange * 0.78,
+          w.obstacles,
+          false
+        );
         lG.lineTo(p.x + Math.cos(ra) * rDist, p.y + Math.sin(ra) * rDist);
       }
       lG.closePath();
       lG.fillPath();
 
-      // Close 360-degree lantern glow around survivor
-      lG.fillStyle(0xfde68a, 0.10);
-      lG.fillCircle(p.x, p.y, closeAuraRadius);
+      // Close 360-degree lantern bounce around survivor
+      lG.fillStyle(0xfde68a, 0.09);
+      lG.fillCircle(p.x, p.y, closeRadius * 0.85);
     } else {
-      // Flashlight OFF: uniform navigable night shadow outside the survivor's close personal aura
-      lG.fillStyle(0x06080b, baseDarkness);
-      lG.beginPath();
-      lG.arc(p.x, p.y, outerCoverRadius, 0, Math.PI * 2, false);
-      lG.arc(p.x, p.y, closeAuraRadius, Math.PI * 2, 0, true);
-      lG.closePath();
-      lG.fillPath();
-
-      // Subtle close-range visibility ring so player is never lost in the dark
-      lG.fillStyle(0x06080b, baseDarkness * 0.45);
-      lG.fillCircle(p.x, p.y, closeAuraRadius);
-      lG.lineStyle(1, 0x94a3b8, 0.14);
-      lG.strokeCircle(p.x, p.y, closeAuraRadius);
+      // Flashlight OFF: subtle close-awareness perimeter ring
+      lG.lineStyle(1.2, 0x94a3b8, 0.16);
+      lG.strokeCircle(p.x, p.y, closeRadius * 0.85);
     }
 
-    // 3. Extraction Gate emergency beacon light
+    // 6. Discrete Directional Acoustic Threat Indicators (sound != sight: indicates direction & distance band of unseen threats)
+    const acousticWave = 0.5 + 0.5 * Math.sin(w.elapsedTime * 7.5);
+    for (const cue of w.acousticCues ?? []) {
+      const cueColor =
+        cue.distanceBand === 'perto'
+          ? 0xef4444
+          : cue.distanceBand === 'medio'
+          ? 0xf59e0b
+          : 0x94a3b8;
+      const ringR =
+        cue.distanceBand === 'perto' ? 54 : cue.distanceBand === 'medio' ? 66 : 78;
+      const span =
+        cue.distanceBand === 'perto' ? 0.34 : cue.distanceBand === 'medio' ? 0.26 : 0.2;
+      const alpha = (0.45 + 0.4 * acousticWave) * cue.intensity;
+
+      // Double acoustic wave arcs on player's directional compass ring
+      aG.lineStyle(cue.distanceBand === 'perto' ? 3.0 : 2.2, cueColor, alpha);
+      aG.beginPath();
+      aG.arc(p.x, p.y, ringR, cue.angle - span, cue.angle + span, false);
+      aG.strokePath();
+
+      aG.lineStyle(1.4, cueColor, alpha * 0.65);
+      aG.beginPath();
+      aG.arc(
+        p.x,
+        p.y,
+        ringR + 6 + acousticWave * 4,
+        cue.angle - span * 0.75,
+        cue.angle + span * 0.75,
+        false
+      );
+      aG.strokePath();
+    }
+
+    // 7. Extraction Gate emergency beacon light
     const pulse = 0.5 + 0.5 * Math.sin(w.elapsedTime * 3.5);
     lG.fillStyle(0x10b981, 0.14 + pulse * 0.10);
     lG.fillCircle(w.extractionZone.x, w.extractionZone.y, w.extractionZone.radius * 1.35);
   }
 }
+

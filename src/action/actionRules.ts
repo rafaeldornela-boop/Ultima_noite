@@ -1,5 +1,6 @@
 import {
   ACTION_STASH_SCHEMA_VERSION,
+  type AcousticCue,
   type ActionInputState,
   type ActionLootBag,
   type ActionWorldState,
@@ -9,6 +10,10 @@ import {
   type MinimapSnapshot,
   type ObstacleRect,
   type PersistentShelterStash,
+  type ShelterSurvivor,
+  type ShelterUpgradeId,
+  type ShelterUpgradeState,
+  type VisibilityLevel,
   type ZombieArchetype,
   type ZombieEntity,
 } from './actionTypes.ts';
@@ -33,6 +38,125 @@ export function createEmptyLootBag(): ActionLootBag {
   };
 }
 
+export function createInitialSurvivors(): ShelterSurvivor[] {
+  return [
+    {
+      id: 'surv_elena',
+      name: 'Elena Vance',
+      role: 'Batedora Tática',
+      hp: 100,
+      maxHp: 100,
+      status: 'saudavel',
+    },
+    {
+      id: 'surv_marcus',
+      name: 'Marcus Costa',
+      role: 'Engenheiro de Rádio',
+      hp: 92,
+      maxHp: 100,
+      status: 'saudavel',
+    },
+    {
+      id: 'surv_sara',
+      name: 'Dra. Sara Lima',
+      role: 'Médica de Campo',
+      hp: 88,
+      maxHp: 100,
+      status: 'saudavel',
+    },
+  ];
+}
+
+export function createInitialUpgrades(): ShelterUpgradeState {
+  return {
+    oficina: 0,
+    enfermaria: 0,
+    torre_radio: 0,
+    muralha: 0,
+  };
+}
+
+export interface ShelterUpgradeDefinition {
+  id: ShelterUpgradeId;
+  name: string;
+  maxLevel: number;
+  description: string;
+  effectSummary: (level: number) => string;
+  costs: Array<Partial<ActionLootBag>>;
+}
+
+export const SHELTER_UPGRADE_CATALOG: Record<ShelterUpgradeId, ShelterUpgradeDefinition> = {
+  oficina: {
+    id: 'oficina',
+    name: 'Bancada Tática & Mochila',
+    maxLevel: 2,
+    description: 'Expande a capacidade de carga da mochila e fabrica munição 9mm extra para cada incursão.',
+    effectSummary: (lvl) =>
+      lvl === 0
+        ? 'Padrão: 24 espaços de carga | 18 munições reserva'
+        : `Ativo (Nv.${lvl}): ${24 + lvl * 6} espaços de carga | +${lvl * 4} munições 9mm na saída`,
+    costs: [
+      { materiais: 4 },
+      { materiais: 7, municao: 6 },
+    ],
+  },
+  enfermaria: {
+    id: 'enfermaria',
+    name: 'Posto Médico de Campo',
+    maxLevel: 2,
+    description: 'Aumenta o vigor máximo em expedição e acelera a aplicação de ataduras.',
+    effectSummary: (lvl) =>
+      lvl === 0
+        ? 'Padrão: 100 PV máx | Atadura +35 PV em 2.2s'
+        : `Ativo (Nv.${lvl}): ${100 + lvl * 15} PV máx | Atadura +${35 + lvl * 10} PV em ${(2.2 - lvl * 0.32).toFixed(1)}s`,
+    costs: [
+      { materiais: 3, medicamentos: 1 },
+      { materiais: 6, medicamentos: 2 },
+    ],
+  },
+  torre_radio: {
+    id: 'torre_radio',
+    name: 'Transmissor & Farol Tático',
+    maxLevel: 2,
+    description: 'Melhora o alcance e bateria da lanterna tática e estabelece contato com o Comboio de Resgate.',
+    effectSummary: (lvl) =>
+      lvl === 0
+        ? 'Padrão: Lanterna 320px | Rádio de Evacuação Offline'
+        : `Ativo (Nv.${lvl}): Lanterna ${320 + lvl * 38}px (-${lvl * 25}% consumo) | Sinal ${lvl * 50}%`,
+    costs: [
+      { materiais: 4 },
+      { materiais: 6, municao: 8 },
+    ],
+  },
+  muralha: {
+    id: 'muralha',
+    name: 'Perímetro & Barricadas',
+    maxLevel: 2,
+    description: 'Protege o abrigo contra ataques noturnos e reduz o desgaste diário da equipe.',
+    effectSummary: (lvl) =>
+      lvl === 0
+        ? 'Padrão: Perímetro vulnerável a cercos noturnos'
+        : `Ativo (Nv.${lvl}): Defesa reforçada (+${lvl * 15}% preparação de evacuação)`,
+    costs: [
+      { materiais: 3, comida: 1 },
+      { materiais: 5, comida: 2 },
+    ],
+  },
+};
+
+export const CAMPAIGN_EVACUATION_COST: ActionLootBag = {
+  comida: 6,
+  medicamentos: 3,
+  municao: 12,
+  materiais: 5,
+};
+
+export const CAMPAIGN_EVACUATION_GOAL = {
+  radioLevelRequired: 1,
+  runsExtractedRequired: 2,
+  ...CAMPAIGN_EVACUATION_COST,
+};
+
 export function createInitialPersistentStash(): PersistentShelterStash {
   return {
     schemaVersion: ACTION_STASH_SCHEMA_VERSION,
@@ -49,6 +173,15 @@ export function createInitialPersistentStash(): PersistentShelterStash {
     extractedRunIds: [],
     lastRunSummary: null,
     updatedAt: new Date().toISOString(),
+    day: 1,
+    survivors: createInitialSurvivors(),
+    activeSurvivorId: 'surv_elena',
+    upgrades: createInitialUpgrades(),
+    evacuationProgress: 0,
+    evacuationCompleted: false,
+    shelterLog: [
+      'Dia 1: Abrigo estabelecido. Construa o Transmissor de Rádio e reúna suprimentos para acionar o Comboio de Evacuação.',
+    ],
   };
 }
 
@@ -116,11 +249,12 @@ export const ZOMBIE_ARCHETYPE_CONFIG: Record<ZombieArchetype, ZombieArchetypeSta
 
 export const WEAPON_CONFIG = {
   pistola: {
-    damage: 24,
-    cooldown: 0.22,
-    bulletSpeed: 680,
-    sightRange: 260,
-    noiseRadius: 480,
+    damage: 24, // Tactical ranged stopping power: 2-shots runner (30 HP -> 6 -> 0) and 2-shots common (45 HP) with safe distance
+    cooldown: 0.25, // Controlled semi-auto cadence
+    range: 640, // Effective bullet range
+    bulletSpeed: 740,
+    sightRange: 300, // Long tactical reach
+    noiseRadius: 480, // Loud acoustic signature that draws nearby zombies
     minConeAngleRad: (12 * Math.PI) / 180, // 12 deg focused cone when stationary & steady
     moveConeAngleRad: (36 * Math.PI) / 180, // 36 deg wider cone while moving
     maxConeAngleRad: (46 * Math.PI) / 180, // 46 deg max cone when sprinting / firing bloom
@@ -129,14 +263,36 @@ export const WEAPON_CONFIG = {
     widenSpeed: 7.5, // Responsive opening rate when moving
   },
   facao: {
-    reach: 86, // 70..100 px world range
-    coneAngleRad: (65 * Math.PI) / 180, // 65 deg total opening (within 55..75 deg)
-    damage: 38, // Standardized 38 PV per hit (single target per swing)
-    cooldown: 0.44, // Distinct recovery interval between swings
-    swingDuration: 0.22,
-    knockback: 220,
+    reach: 84, // Short melee reach requiring close-quarters commitment
+    coneAngleRad: (65 * Math.PI) / 180, // 65 deg total opening
+    damage: 22, // Significantly reduced per-hit damage (requires 3 hits for 45 HP common zombie, 6 for brute)
+    cooldown: 0.68, // Deliberate recovery cadence between slashes so it cannot be spammed to dominate
+    swingDuration: 0.14, // Crisp, fast strike response on activation
+    knockback: 185,
     noiseRadius: 95, // Effective 95 px low-radius melee sound
   },
+} as const;
+
+export const VISION_CONFIG = {
+  closeAwarenessRadius: {
+    dia: 105,
+    entardecer: 88,
+    madrugada: 74,
+    noite: 64,
+    indoor: 68,
+  },
+  directConeRange: {
+    dia: 255,
+    entardecer: 215,
+    madrugada: 175,
+    noite: 145,
+    indoor: 155,
+  },
+  directConeAngleRad: (108 * Math.PI) / 180, // Directional perception cone (~108 deg)
+  penumbraConePaddingRad: (26 * Math.PI) / 180,
+  penumbraRangePadding: 44,
+  flashlightBonusRange: 185, // Significant range boost when flashlight is enabled
+  acousticDetectionRange: 340, // Max distance at which moving/attacking unseen zombies emit directional sound cues
 } as const;
 
 export const DEFAULT_MAX_CARRY_CAPACITY = 24;
@@ -169,6 +325,8 @@ export function createZombieFromArchetype(
     alertState: 'idle',
     alertTimer: 0,
     targetPoint: null,
+    visibility: 'hidden',
+    lastHeardTimer: 0,
     hp: cfg.hp,
     maxHp: cfg.hp,
     speed: cfg.speed,
@@ -189,9 +347,21 @@ export function createZombieFromArchetype(
 
 export function createInitialWorldState(
   runId?: string,
-  districtId: DistrictId = 'vila_esperanca'
+  districtId: DistrictId = 'vila_esperanca',
+  stash?: PersistentShelterStash
 ): ActionWorldState {
   const def = getDistrictDefinition(districtId);
+  const upgrades = stash?.upgrades ?? createInitialUpgrades();
+  const activeSurvivor = stash?.survivors?.find((s) => s.id === stash.activeSurvivorId);
+
+  const bonusCapacity = (upgrades.oficina || 0) * 6;
+  const bonusReserveAmmo = (upgrades.oficina || 0) * 4;
+  const bonusMaxHp = (upgrades.enfermaria || 0) * 15;
+  const startingHp = activeSurvivor
+    ? Math.max(35, Math.min(100 + bonusMaxHp, Math.round((activeSurvivor.hp / activeSurvivor.maxHp) * (100 + bonusMaxHp))))
+    : 100 + bonusMaxHp;
+  const flashlightRange = 320 + (upgrades.torre_radio || 0) * 38;
+  const flashlightDrain = Number((1.15 * Math.pow(0.75, upgrades.torre_radio || 0)).toFixed(3));
 
   const world: ActionWorldState = {
     runId: runId ?? `run_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
@@ -201,12 +371,12 @@ export function createInitialWorldState(
     dayNightClock: 0,
     ambientDarkness:
       def.initialTimeOfDay === 'noite'
-        ? 0.42
+        ? 0.48
         : def.initialTimeOfDay === 'madrugada'
-        ? 0.34
+        ? 0.38
         : def.initialTimeOfDay === 'entardecer'
-        ? 0.24
-        : 0.10,
+        ? 0.26
+        : 0.12,
     isInsideBuilding: false,
     currentBuildingName: null,
     status: 'playing',
@@ -225,8 +395,8 @@ export function createInitialWorldState(
       aimSpreadRad: WEAPON_CONFIG.pistola.minConeAngleRad,
       engagedTargetId: null,
       engagedTargetIds: [],
-      hp: 100,
-      maxHp: 100,
+      hp: startingHp,
+      maxHp: 100 + bonusMaxHp,
       stamina: 100,
       maxStamina: 100,
       sprinting: false,
@@ -236,7 +406,7 @@ export function createInitialWorldState(
       equippedWeapon: 'pistola',
       ammoInClip: 12,
       clipSize: 12,
-      ammoReserve: 18,
+      ammoReserve: 18 + bonusReserveAmmo,
       reloadTimer: 0,
       reloadDuration: 1.0,
       attackCooldown: 0,
@@ -246,8 +416,8 @@ export function createInitialWorldState(
         enabled: true,
         battery: 100,
         maxBattery: 100,
-        drainRate: 1.15, // lasts ~85s of continuous light
-        range: 320,
+        drainRate: flashlightDrain,
+        range: flashlightRange,
         coneAngle: 0.98,
       },
       healing: null,
@@ -261,6 +431,7 @@ export function createInitialWorldState(
     lootSpots: def.lootSpots.map((l) => ({
       ...l,
       searchState: l.looted ? 'searched' : 'available',
+      isVisibleToPlayer: false,
       contents: { ...l.contents },
     })),
     obstacles: def.obstacles.map((o) => ({ ...o })),
@@ -268,6 +439,8 @@ export function createInitialWorldState(
       ...b,
       roofColor: b.roofColor ?? 0x3b2d24,
       roofAlpha: 1.0,
+      doors: b.doors ? b.doors.map((d) => ({ ...d })) : [],
+      windows: b.windows ? b.windows.map((w) => ({ ...w })) : [],
     })),
     extractionZone: { ...def.extractionZone },
     runLoot: {
@@ -276,7 +449,7 @@ export function createInitialWorldState(
       municao: 0,
       materiais: 0,
     },
-    maxCarryCapacity: DEFAULT_MAX_CARRY_CAPACITY,
+    maxCarryCapacity: DEFAULT_MAX_CARRY_CAPACITY + bonusCapacity,
     zombiesKilled: 0,
     shotsFired: 0,
     activePrompt: null,
@@ -285,8 +458,11 @@ export function createInitialWorldState(
     extractionProcessed: false,
     activeLooting: null,
     noiseEvents: [],
+    acousticCues: [],
   };
 
+  updateBuildingRoofs(world, 1.0);
+  updateWorldVisibility(world);
   world.activePrompt = findNearestInteractable(world);
   return world;
 }
@@ -297,10 +473,14 @@ export function toggleFlashlight(world: ActionWorldState): boolean {
     f.enabled = false;
     world.lastEventBanner = 'Bateria descarregada! Encontre pilhas ou materiais.';
     addFloatingFeedback(world, 'Sem Bateria', world.player.x, world.player.y - 24, '#94a3b8');
+    updateWorldVisibility(world);
+    updateEngagedTargets(world);
     return false;
   }
   f.enabled = !f.enabled;
   world.lastEventBanner = f.enabled ? 'Lanterna ligada.' : 'Lanterna apagada.';
+  updateWorldVisibility(world);
+  updateEngagedTargets(world);
   return f.enabled;
 }
 
@@ -319,11 +499,15 @@ export function startHealing(world: ActionWorldState): boolean {
   }
   if (p.healing?.active) return false;
 
+  const medLevel = Math.max(0, Math.round((p.maxHp - 100) / 15));
+  const duration = Number(Math.max(1.4, 2.2 - medLevel * 0.32).toFixed(2));
+  const healAmount = 35 + medLevel * 10;
+
   p.healing = {
     active: true,
     progress: 0,
-    duration: 2.2, // 2.2 seconds channel duration
-    healAmount: 35,
+    duration,
+    healAmount,
   };
   world.lastEventBanner = 'Aplicando atadura de campo... Mantenha-se protegido!';
   addFloatingFeedback(world, 'Aplicando Atadura...', p.x, p.y - 24, '#10b981');
@@ -557,6 +741,23 @@ export function isSegmentBlockedByWall(
   return false;
 }
 
+export function isSegmentBlockedByObstacle(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  obstacles: ObstacleRect[],
+  ignoreObstacleId?: string
+): boolean {
+  for (const obs of obstacles) {
+    if (ignoreObstacleId && obs.id === ignoreObstacleId) continue;
+    if (segmentIntersectsRect(x1, y1, x2, y2, obs)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function getRayObstacleDistance(
   ox: number,
   oy: number,
@@ -613,6 +814,222 @@ export function getRayObstacleDistance(
   }
 
   return Math.max(8, bestDist);
+}
+
+export function computeVisibilityPolygon(
+  ox: number,
+  oy: number,
+  startAngle: number,
+  endAngle: number,
+  maxDist: number,
+  obstacles: ObstacleRect[],
+  rayCount = 44,
+  wallsOnly = false
+): Array<{ x: number; y: number }> {
+  const pts: Array<{ x: number; y: number }> = [];
+  const totalSpan = endAngle - startAngle;
+  const isFullCircle = Math.abs(totalSpan - Math.PI * 2) < 0.01;
+  if (!isFullCircle) {
+    pts.push({ x: ox, y: oy });
+  }
+
+  const steps = Math.max(8, rayCount);
+  for (let i = 0; i <= steps; i++) {
+    if (isFullCircle && i === steps) break;
+    const angle = startAngle + (totalSpan * i) / steps;
+    const hitDist = getRayObstacleDistance(ox, oy, angle, maxDist, obstacles, wallsOnly);
+    pts.push({
+      x: ox + Math.cos(angle) * hitDist,
+      y: oy + Math.sin(angle) * hitDist,
+    });
+  }
+
+  return pts;
+}
+
+export function getEffectiveVisionRanges(world: ActionWorldState): {
+  closeRadius: number;
+  coneRange: number;
+  coneAngleRad: number;
+  flashlightActive: boolean;
+  flashlightRange: number;
+  flashlightConeAngleRad: number;
+} {
+  const p = world.player;
+  const isIndoor = world.isInsideBuilding;
+  const closeRadius = isIndoor
+    ? VISION_CONFIG.closeAwarenessRadius.indoor
+    : VISION_CONFIG.closeAwarenessRadius[world.timeOfDay];
+  const coneRange = isIndoor
+    ? VISION_CONFIG.directConeRange.indoor
+    : VISION_CONFIG.directConeRange[world.timeOfDay];
+
+  const flashlightActive = Boolean(p.flashlight.enabled && p.flashlight.battery > 0);
+  const flashlightRange = flashlightActive
+    ? Math.max(p.flashlight.range, coneRange + VISION_CONFIG.flashlightBonusRange)
+    : 0;
+
+  return {
+    closeRadius,
+    coneRange,
+    coneAngleRad: VISION_CONFIG.directConeAngleRad,
+    flashlightActive,
+    flashlightRange,
+    flashlightConeAngleRad: p.flashlight.coneAngle,
+  };
+}
+
+export function evaluatePointVisibility(
+  world: ActionWorldState,
+  targetX: number,
+  targetY: number,
+  ignoreObstacleId?: string
+): VisibilityLevel {
+  const p = world.player;
+  const dx = targetX - p.x;
+  const dy = targetY - p.y;
+  const dist = Math.hypot(dx, dy);
+
+  // 1. Check wall and solid obstacle line-of-sight occlusion
+  if (isSegmentBlockedByObstacle(p.x, p.y, targetX, targetY, world.obstacles, ignoreObstacleId)) {
+    return 'hidden';
+  }
+
+  // 2. If target is inside a closed building while player is outside, roof hides interior
+  // unless player is right at an open doorway threshold with direct sight through the door
+  const targetBuilding = world.buildings.find(
+    (b) =>
+      targetX > b.x + 14 &&
+      targetX < b.x + b.width - 14 &&
+      targetY > b.y + 14 &&
+      targetY < b.y + b.height - 14
+  );
+  if (targetBuilding && p.isInsideBuilding !== targetBuilding.id) {
+    const roofAlpha = targetBuilding.roofAlpha ?? 1.0;
+    if (roofAlpha > 0.65) {
+      // Allow seeing just inside an open doorway if player is standing right near the door
+      const nearDoor = (targetBuilding.doors ?? []).some(
+        (d) =>
+          Math.hypot(p.x - (d.x + d.width * 0.5), p.y - (d.y + d.height * 0.5)) <= 95 &&
+          Math.hypot(targetX - (d.x + d.width * 0.5), targetY - (d.y + d.height * 0.5)) <= 125
+      );
+      if (!nearDoor) {
+        return 'hidden';
+      }
+    }
+  }
+
+  const {
+    closeRadius,
+    coneRange,
+    coneAngleRad,
+    flashlightActive,
+    flashlightRange,
+    flashlightConeAngleRad,
+  } = getEffectiveVisionRanges(world);
+
+  // 3. Immediate 360-degree peripheral perception right around the character
+  if (dist <= closeRadius * 0.82) {
+    return 'visible';
+  }
+
+  const angleToTarget = Math.atan2(dy, dx);
+  const angleDiff = Math.abs(
+    ((angleToTarget - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+  );
+
+  // 4. Directional natural vision cone
+  const halfCone = coneAngleRad * 0.5;
+  if (dist <= coneRange && angleDiff <= halfCone) {
+    return 'visible';
+  }
+
+  // 5. Directional tactical flashlight beam (significantly extends visibility in pointed direction)
+  if (flashlightActive) {
+    const halfFlash = flashlightConeAngleRad * 0.5;
+    if (dist <= flashlightRange && angleDiff <= halfFlash) {
+      return 'visible';
+    }
+    if (
+      dist <= flashlightRange + VISION_CONFIG.penumbraRangePadding &&
+      angleDiff <= halfFlash + VISION_CONFIG.penumbraConePaddingRad * 0.5
+    ) {
+      return 'penumbra';
+    }
+  }
+
+  // 6. Penumbra transition zone (peripheral edge & distance falloff)
+  if (dist <= closeRadius + 22) {
+    return 'penumbra';
+  }
+  if (
+    dist <= coneRange + VISION_CONFIG.penumbraRangePadding &&
+    angleDiff <= halfCone + VISION_CONFIG.penumbraConePaddingRad * 0.5
+  ) {
+    return 'penumbra';
+  }
+
+  return 'hidden';
+}
+
+export function updateWorldVisibility(world: ActionWorldState, dt = 0.016): void {
+  const p = world.player;
+  if (!world.acousticCues) {
+    world.acousticCues = [];
+  }
+
+  // Update loot spot visibility
+  for (const spot of world.lootSpots) {
+    const vis = evaluatePointVisibility(world, spot.x, spot.y, spot.obstacleId);
+    spot.isVisibleToPlayer = vis !== 'hidden';
+  }
+
+  // Update zombie visibility & generate discrete acoustic cues for unseen noisy threats
+  const nextCues: AcousticCue[] = [];
+  for (const z of world.zombies) {
+    if (z.dead) {
+      z.visibility = 'hidden';
+      z.visibilityState = 'hidden';
+      z.isVisibleToPlayer = false;
+      continue;
+    }
+    const vis = evaluatePointVisibility(world, z.x, z.y);
+    z.visibility = vis;
+    z.visibilityState = vis;
+    z.isVisibleToPlayer = vis !== 'hidden';
+
+    const dx = z.x - p.x;
+    const dy = z.y - p.y;
+    const dist = Math.hypot(dx, dy);
+    const zSpeed = Math.hypot(z.vx, z.vy);
+    const isMakingSound = z.isWindingUp || z.alertState === 'hunting' || zSpeed > 6;
+
+    if (vis === 'hidden' && isMakingSound && dist <= VISION_CONFIG.acousticDetectionRange) {
+      z.lastHeardTimer = 0.6;
+      const angle = Math.atan2(dy, dx);
+      // Quantize direction and distance band so sound indicates approximate direction/distance, not exact position
+      const quantizedAngle = Math.round(angle / (Math.PI / 12)) * (Math.PI / 12);
+      const distanceBand = dist < 125 ? 'perto' : dist < 230 ? 'medio' : 'longe';
+      const approxDist = distanceBand === 'perto' ? 90 : distanceBand === 'medio' ? 175 : 265;
+      nextCues.push({
+        id: `cue_${z.id}`,
+        angle: quantizedAngle,
+        angleRad: quantizedAngle,
+        distanceBand,
+        approxX: Math.round(p.x + Math.cos(quantizedAngle) * approxDist),
+        approxY: Math.round(p.y + Math.sin(quantizedAngle) * approxDist),
+        intensity: z.isWindingUp
+          ? 1.0
+          : Math.max(0.28, Math.min(0.9, 1 - dist / VISION_CONFIG.acousticDetectionRange)),
+        ttl: 0.45,
+        source: z.isWindingUp ? 'zombie_attack' : 'zombie_step',
+      });
+    } else if (z.lastHeardTimer && z.lastHeardTimer > 0) {
+      z.lastHeardTimer = Math.max(0, z.lastHeardTimer - dt);
+    }
+  }
+
+  world.acousticCues = nextCues;
 }
 
 function addFloatingFeedback(
@@ -699,7 +1116,12 @@ export function updateEngagedTargets(world: ActionWorldState): void {
     const bodyAngularAllowance = Math.atan2(z.radius * 0.75, Math.max(20, dist));
     if (angleDiff > halfCone + bodyAngularAllowance) continue;
 
-    if (isSegmentBlockedByWall(p.x, p.y, z.x, z.y, world.obstacles)) continue;
+    if (isSegmentBlockedByObstacle(p.x, p.y, z.x, z.y, world.obstacles)) continue;
+
+    // Only highlight/engage targets that are within the player's tactical visibility
+    const vis = evaluatePointVisibility(world, z.x, z.y);
+    z.visibility = vis;
+    if (vis === 'hidden') continue;
 
     engagedIds.push(z.id);
     const score = edgeDist + angleDiff * 40;
@@ -835,10 +1257,10 @@ export function performMeleeSwing(world: ActionWorldState): {
     const bodyAngularAllowance = Math.atan2(z.radius * 0.75, Math.max(20, dist));
     if (angleDiff > halfCone + bodyAngularAllowance) continue;
 
-    // Wall obstruction check: cannot slash through solid walls
-    if (isSegmentBlockedByWall(p.x, p.y, z.x, z.y, world.obstacles)) continue;
+    // Wall & solid obstacle obstruction check: cannot slash through walls, vehicles, or furniture
+    if (isSegmentBlockedByObstacle(p.x, p.y, z.x, z.y, world.obstacles)) continue;
 
-    // Prioritize closest and best-aligned target within the valid cone
+    // Prioritize closest and best-aligned target within the valid cone (max 1 hit per swing)
     const score = edgeDist + angleDiff * 35;
     if (score < bestScore) {
       bestScore = score;
@@ -1340,16 +1762,16 @@ export function stepWorld(
   if (Math.floor(prevClock / 45) !== Math.floor(world.dayNightClock / 45)) {
     if (world.dayNightClock < 45) {
       world.timeOfDay = 'dia';
-      world.ambientDarkness = 0.10;
+      world.ambientDarkness = 0.12;
     } else if (world.dayNightClock < 90) {
       world.timeOfDay = 'entardecer';
-      world.ambientDarkness = 0.24;
+      world.ambientDarkness = 0.26;
     } else if (world.dayNightClock < 150) {
       world.timeOfDay = 'noite';
-      world.ambientDarkness = 0.42;
+      world.ambientDarkness = 0.48;
     } else {
       world.timeOfDay = 'madrugada';
-      world.ambientDarkness = 0.34;
+      world.ambientDarkness = 0.38;
     }
   }
 
@@ -1560,7 +1982,8 @@ export function stepWorld(
     world.activeLooting = null;
   }
 
-  // Update Bullet Echo target engagement before & after attack
+  // Update visibility & Bullet Echo target engagement before attack
+  updateWorldVisibility(world, dt);
   updateEngagedTargets(world);
 
   // Attack handling (supports attacking while moving)
@@ -1660,6 +2083,7 @@ export function stepWorld(
       ((angleToPlayer - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
     );
     const inVisionCone = angleDiff <= z.visionConeAngle * 0.5;
+    const hasClearLOS = !isSegmentBlockedByWall(z.x, z.y, p.x, p.y, world.obstacles);
 
     // Base effective sight range: daylight vs dark
     let effectiveSightRange = z.visionRange;
@@ -1667,8 +2091,8 @@ export function stepWorld(
       effectiveSightRange = 95; // reduced sight in night / dark interiors when flashlight is off
     }
 
-    // Flashlight detection: if player flashlight is ON, light reflects and alerts zombie from far
-    if (p.flashlight.enabled) {
+    // Flashlight detection: if player flashlight is ON and unobstructed by walls, light alerts zombie
+    if (p.flashlight.enabled && hasClearLOS) {
       const anglePlayerToZ = Math.abs(
         ((Math.atan2(-dy, -dx) - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
       );
@@ -1683,13 +2107,13 @@ export function stepWorld(
     let targetX = p.x;
     let targetY = p.y;
 
-    if (inVisionCone && distToPlayer <= effectiveSightRange) {
+    if (hasClearLOS && inVisionCone && distToPlayer <= effectiveSightRange) {
       isAlerted = true;
       z.alertState = 'hunting';
       z.alertTimer = 6.0;
       z.targetPoint = { x: p.x, y: p.y };
-    } else if (distToPlayer <= 110) {
-      // Close footstep / breathing detection even from behind
+    } else if (hasClearLOS && distToPlayer <= 110) {
+      // Close footstep / breathing detection even from behind when not separated by a solid wall
       isAlerted = true;
       z.alertState = 'hunting';
       z.alertTimer = 4.0;
@@ -1826,10 +2250,280 @@ export function stepWorld(
     }
   }
 
+  updateWorldVisibility(world, dt);
   updateEngagedTargets(world);
   world.activePrompt = findNearestInteractable(world);
   return world;
 }
+
+export function computeEvacuationProgress(stash: PersistentShelterStash): number {
+  if (stash.evacuationCompleted) return 100;
+  const upg = stash.upgrades ?? createInitialUpgrades();
+  const radioScore = (upg.torre_radio || 0) * 25; // up to 50%
+  const defenseScore = (upg.muralha || 0) * 10 + (upg.oficina || 0) * 5 + (upg.enfermaria || 0) * 5; // up to 40%
+  const extractionScore = Math.min(20, stash.runsExtracted * 10); // up to 20%
+  const supplyRatio =
+    Math.min(1, stash.totalStash.comida / CAMPAIGN_EVACUATION_COST.comida) * 0.25 +
+    Math.min(1, stash.totalStash.medicamentos / CAMPAIGN_EVACUATION_COST.medicamentos) * 0.25 +
+    Math.min(1, stash.totalStash.municao / CAMPAIGN_EVACUATION_COST.municao) * 0.25 +
+    Math.min(1, stash.totalStash.materiais / CAMPAIGN_EVACUATION_COST.materiais) * 0.25;
+  const supplyScore = Math.round(supplyRatio * 20);
+  return Math.min(99, radioScore + Math.min(30, defenseScore) + extractionScore + supplyScore);
+}
+
+export function canAffordCost(bag: ActionLootBag, cost: Partial<ActionLootBag>): boolean {
+  return (
+    bag.comida >= (cost.comida ?? 0) &&
+    bag.medicamentos >= (cost.medicamentos ?? 0) &&
+    bag.municao >= (cost.municao ?? 0) &&
+    bag.materiais >= (cost.materiais ?? 0)
+  );
+}
+
+export function purchaseShelterUpgrade(
+  stash: PersistentShelterStash,
+  upgradeId: ShelterUpgradeId
+): { ok: boolean; stash: PersistentShelterStash; message: string } {
+  const def = SHELTER_UPGRADE_CATALOG[upgradeId];
+  if (!def) {
+    return { ok: false, stash, message: 'Melhoria desconhecida.' };
+  }
+  const currentUpgrades = stash.upgrades ?? createInitialUpgrades();
+  const currentLevel = currentUpgrades[upgradeId] ?? 0;
+  if (currentLevel >= def.maxLevel) {
+    return { ok: false, stash, message: `${def.name} já está no nível máximo.` };
+  }
+
+  const cost = def.costs[currentLevel];
+  if (!canAffordCost(stash.totalStash, cost)) {
+    return {
+      ok: false,
+      stash,
+      message: `Recursos insuficientes para ${def.name} (Nv.${currentLevel + 1}).`,
+    };
+  }
+
+  const nextStashBag: ActionLootBag = {
+    comida: stash.totalStash.comida - (cost.comida ?? 0),
+    medicamentos: stash.totalStash.medicamentos - (cost.medicamentos ?? 0),
+    municao: stash.totalStash.municao - (cost.municao ?? 0),
+    materiais: stash.totalStash.materiais - (cost.materiais ?? 0),
+  };
+
+  const nextUpgrades: ShelterUpgradeState = {
+    ...currentUpgrades,
+    [upgradeId]: currentLevel + 1,
+  };
+
+  const logEntry = `Dia ${stash.day ?? 1}: Construído ${def.name} Nv.${currentLevel + 1}.`;
+  const nextStash: PersistentShelterStash = {
+    ...stash,
+    totalStash: nextStashBag,
+    upgrades: nextUpgrades,
+    shelterLog: [logEntry, ...(stash.shelterLog ?? [])].slice(0, 14),
+    updatedAt: new Date().toISOString(),
+  };
+  nextStash.evacuationProgress = computeEvacuationProgress(nextStash);
+
+  return {
+    ok: true,
+    stash: nextStash,
+    message: `${def.name} atualizado para Nv.${currentLevel + 1}!`,
+  };
+}
+
+export function healSurvivorInShelter(
+  stash: PersistentShelterStash,
+  survivorId: string
+): { ok: boolean; stash: PersistentShelterStash; message: string } {
+  const survivors = stash.survivors ?? createInitialSurvivors();
+  const target = survivors.find((s) => s.id === survivorId);
+  if (!target || target.status === 'morto') {
+    return { ok: false, stash, message: 'Sobrevivente indisponível para tratamento.' };
+  }
+  if (target.hp >= target.maxHp && target.status === 'saudavel') {
+    return { ok: false, stash, message: `${target.name} já está com saúde plena.` };
+  }
+  if (stash.totalStash.medicamentos < 1) {
+    return { ok: false, stash, message: 'Sem Medicamentos no estoque do abrigo.' };
+  }
+
+  const medBonus = ((stash.upgrades?.enfermaria ?? 0) * 15);
+  const healAmt = 45 + medBonus;
+  const nextSurvivors: ShelterSurvivor[] = survivors.map((s) => {
+    if (s.id !== survivorId) return s;
+    const nextHp = Math.min(s.maxHp, s.hp + healAmt);
+    return {
+      ...s,
+      hp: nextHp,
+      status: nextHp >= 75 ? 'saudavel' : 'ferido',
+    };
+  });
+
+  const nextStash: PersistentShelterStash = {
+    ...stash,
+    totalStash: {
+      ...stash.totalStash,
+      medicamentos: stash.totalStash.medicamentos - 1,
+    },
+    survivors: nextSurvivors,
+    shelterLog: [
+      `Dia ${stash.day ?? 1}: ${target.name} recebeu tratamento médico (+${healAmt} PV).`,
+      ...(stash.shelterLog ?? []),
+    ].slice(0, 14),
+    updatedAt: new Date().toISOString(),
+  };
+  nextStash.evacuationProgress = computeEvacuationProgress(nextStash);
+  return {
+    ok: true,
+    stash: nextStash,
+    message: `${target.name} tratado (+${healAmt} PV).`,
+  };
+}
+
+export function feedAndRestShelter(
+  stash: PersistentShelterStash
+): { ok: boolean; stash: PersistentShelterStash; message: string } {
+  const survivors = stash.survivors ?? createInitialSurvivors();
+  const living = survivors.filter((s) => s.status !== 'morto');
+  const rationCost = Math.max(1, Math.min(2, living.length));
+  if (stash.totalStash.comida < rationCost) {
+    return {
+      ok: false,
+      stash,
+      message: `Comida insuficiente para turno de descanso (necessário: ${rationCost} Comida).`,
+    };
+  }
+
+  const nextDay = (stash.day ?? 1) + 1;
+  const nextSurvivors: ShelterSurvivor[] = survivors.map((s) => {
+    if (s.status === 'morto') return s;
+    const nextHp = Math.min(s.maxHp, s.hp + 20);
+    return {
+      ...s,
+      hp: nextHp,
+      status: nextHp >= 75 ? 'saudavel' : 'ferido',
+    };
+  });
+
+  const nextStash: PersistentShelterStash = {
+    ...stash,
+    day: nextDay,
+    totalStash: {
+      ...stash.totalStash,
+      comida: stash.totalStash.comida - rationCost,
+    },
+    survivors: nextSurvivors,
+    shelterLog: [
+      `Dia ${nextDay}: Equipe alimentada (-${rationCost} Comida) e recuperada (+20 PV).`,
+      ...(stash.shelterLog ?? []),
+    ].slice(0, 14),
+    updatedAt: new Date().toISOString(),
+  };
+  nextStash.evacuationProgress = computeEvacuationProgress(nextStash);
+  return {
+    ok: true,
+    stash: nextStash,
+    message: `Dia ${nextDay}: Equipe alimentada e pronta para nova incursão.`,
+  };
+}
+
+export function selectActiveSurvivor(
+  stash: PersistentShelterStash,
+  survivorId: string
+): PersistentShelterStash {
+  const survivors = stash.survivors ?? createInitialSurvivors();
+  const found = survivors.find((s) => s.id === survivorId && s.status !== 'morto');
+  if (!found) return stash;
+  return {
+    ...stash,
+    activeSurvivorId: found.id,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function canTriggerFinalEvacuation(stash: PersistentShelterStash): {
+  ready: boolean;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const radioLvl = stash.upgrades?.torre_radio ?? 0;
+  if (radioLvl < 1) {
+    reasons.push('Construir Transmissor & Farol Tático (Nv. 1+)');
+  }
+  if (stash.runsExtracted < 2) {
+    reasons.push(`Concluir pelo menos 2 incursões com extração (${stash.runsExtracted}/2)`);
+  }
+  if (stash.totalStash.comida < CAMPAIGN_EVACUATION_COST.comida) {
+    reasons.push(`Comida para o comboio (${stash.totalStash.comida}/${CAMPAIGN_EVACUATION_COST.comida})`);
+  }
+  if (stash.totalStash.medicamentos < CAMPAIGN_EVACUATION_COST.medicamentos) {
+    reasons.push(
+      `Medicamentos de emergência (${stash.totalStash.medicamentos}/${CAMPAIGN_EVACUATION_COST.medicamentos})`
+    );
+  }
+  if (stash.totalStash.municao < CAMPAIGN_EVACUATION_COST.municao) {
+    reasons.push(`Munição de escolta (${stash.totalStash.municao}/${CAMPAIGN_EVACUATION_COST.municao})`);
+  }
+  if (stash.totalStash.materiais < CAMPAIGN_EVACUATION_COST.materiais) {
+    reasons.push(
+      `Materiais de blindagem (${stash.totalStash.materiais}/${CAMPAIGN_EVACUATION_COST.materiais})`
+    );
+  }
+  return {
+    ready: reasons.length === 0,
+    reasons,
+  };
+}
+
+export function triggerFinalEvacuation(
+  stash: PersistentShelterStash
+): { ok: boolean; stash: PersistentShelterStash; message: string } {
+  const check = canTriggerFinalEvacuation(stash);
+  if (!check.ready) {
+    return {
+      ok: false,
+      stash,
+      message: `Evacuação indisponível: ${check.reasons[0]}`,
+    };
+  }
+
+  const nextStash: PersistentShelterStash = {
+    ...stash,
+    totalStash: {
+      comida: stash.totalStash.comida - CAMPAIGN_EVACUATION_COST.comida,
+      medicamentos: stash.totalStash.medicamentos - CAMPAIGN_EVACUATION_COST.medicamentos,
+      municao: stash.totalStash.municao - CAMPAIGN_EVACUATION_COST.municao,
+      materiais: stash.totalStash.materiais - CAMPAIGN_EVACUATION_COST.materiais,
+    },
+    evacuationProgress: 100,
+    evacuationCompleted: true,
+    shelterLog: [
+      `Dia ${stash.day ?? 1}: SINAL DE RESGATE CONFIRMADO! O comboio evacuou os sobreviventes do setor com segurança.`,
+      ...(stash.shelterLog ?? []),
+    ].slice(0, 14),
+    updatedAt: new Date().toISOString(),
+  };
+
+  return {
+    ok: true,
+    stash: nextStash,
+    message: 'Comboio de Evacuação acionado! Sobreviventes resgatados com sucesso!',
+  };
+}
+
+export function getShelterUpgradeCost(
+  upgradeId: ShelterUpgradeId,
+  currentLevel: number
+): Partial<ActionLootBag> | null {
+  const def = SHELTER_UPGRADE_CATALOG[upgradeId];
+  if (!def || currentLevel >= def.maxLevel) return null;
+  return def.costs[currentLevel] ?? null;
+}
+
+export const upgradeShelterStation = purchaseShelterUpgrade;
+export const healShelterSurvivor = healSurvivorInShelter;
+export const executeEvacuation = triggerFinalEvacuation;
 
 export function applyExtractionToStash(
   stash: PersistentShelterStash,
@@ -1840,6 +2534,10 @@ export function applyExtractionToStash(
     return stash;
   }
 
+  const currentSurvivors = stash.survivors ?? createInitialSurvivors();
+  const activeId = stash.activeSurvivorId ?? currentSurvivors[0]?.id ?? 'surv_elena';
+  const nextDay = (stash.day ?? 1) + 1;
+
   if (world.status === 'extracted') {
     const nextStash: ActionLootBag = {
       comida: stash.totalStash.comida + world.runLoot.comida,
@@ -1848,9 +2546,22 @@ export function applyExtractionToStash(
       materiais: stash.totalStash.materiais + world.runLoot.materiais,
     };
 
-    return {
+    const hpRatio = Math.max(0.2, Math.min(1, world.player.hp / Math.max(1, world.player.maxHp)));
+    const nextSurvivors: ShelterSurvivor[] = currentSurvivors.map((s) => {
+      if (s.id !== activeId) return s;
+      const newHp = Math.max(20, Math.round(hpRatio * s.maxHp));
+      return {
+        ...s,
+        hp: newHp,
+        status: newHp < 65 ? 'ferido' : 'saudavel',
+      };
+    });
+
+    const updated: PersistentShelterStash = {
       ...stash,
+      day: nextDay,
       totalStash: nextStash,
+      survivors: nextSurvivors,
       runsStarted: stash.runsStarted + 1,
       runsExtracted: stash.runsExtracted + 1,
       totalZombiesKilled: stash.totalZombiesKilled + world.zombiesKilled,
@@ -1861,13 +2572,34 @@ export function applyExtractionToStash(
         zombiesKilled: world.zombiesKilled,
         durationSeconds: Math.round(world.elapsedTime),
       },
+      shelterLog: [
+        `Dia ${nextDay}: Extração bem-sucedida em ${world.districtName} (+${world.runLoot.comida} Comida, +${world.runLoot.materiais} Mat).`,
+        ...(stash.shelterLog ?? []),
+      ].slice(0, 14),
       updatedAt: new Date().toISOString(),
     };
+    updated.evacuationProgress = computeEvacuationProgress(updated);
+    return updated;
   }
 
   if (world.status === 'dead') {
-    return {
+    // Active survivor suffers severe trauma or falls; select next available survivor if needed
+    const nextSurvivors: ShelterSurvivor[] = currentSurvivors.map((s) => {
+      if (s.id !== activeId) return s;
+      return {
+        ...s,
+        hp: 25,
+        status: 'ferido',
+      };
+    });
+    const healthyFallback =
+      nextSurvivors.find((s) => s.status === 'saudavel')?.id ?? activeId;
+
+    const updated: PersistentShelterStash = {
       ...stash,
+      day: nextDay,
+      survivors: nextSurvivors,
+      activeSurvivorId: healthyFallback,
       runsStarted: stash.runsStarted + 1,
       runsDied: stash.runsDied + 1,
       totalZombiesKilled: stash.totalZombiesKilled + world.zombiesKilled,
@@ -1878,8 +2610,14 @@ export function applyExtractionToStash(
         zombiesKilled: world.zombiesKilled,
         durationSeconds: Math.round(world.elapsedTime),
       },
+      shelterLog: [
+        `Dia ${nextDay}: Incursão falhou em ${world.districtName}. O batedor retornou gravemente ferido e sem o saque.`,
+        ...(stash.shelterLog ?? []),
+      ].slice(0, 14),
       updatedAt: new Date().toISOString(),
     };
+    updated.evacuationProgress = computeEvacuationProgress(updated);
+    return updated;
   }
 
   return stash;
@@ -1950,14 +2688,16 @@ export function buildMinimapSnapshot(
       width: Number((b.width * scaleX).toFixed(2)),
       height: Number((b.height * scaleY).toFixed(2)),
     })),
-    lootSpots: world.lootSpots.map((spot) => ({
-      id: spot.id,
-      x: clampX(spot.x),
-      y: clampY(spot.y),
-      looted: spot.looted,
-    })),
+    lootSpots: world.lootSpots
+      .filter((spot) => spot.looted || spot.isVisibleToPlayer)
+      .map((spot) => ({
+        id: spot.id,
+        x: clampX(spot.x),
+        y: clampY(spot.y),
+        looted: spot.looted,
+      })),
     zombies: world.zombies
-      .filter((z) => !z.dead)
+      .filter((z) => !z.dead && z.visibility !== 'hidden')
       .map((z) => ({
         id: z.id,
         x: clampX(z.x),
@@ -1966,4 +2706,5 @@ export function buildMinimapSnapshot(
       })),
   };
 }
+
 

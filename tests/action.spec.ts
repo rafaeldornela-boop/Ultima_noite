@@ -3,16 +3,24 @@ import {
   applyDamageToPlayer,
   applyExtractionToStash,
   buildMinimapSnapshot,
+  computeEvacuationProgress,
   createDefaultInputState,
   createInitialPersistentStash,
   createInitialWorldState,
   createZombieFromArchetype,
+  evaluatePointVisibility,
+  executeEvacuation,
+  healShelterSurvivor,
   performAttack,
+  selectActiveSurvivor,
   startReload,
   stepWorld,
+  toggleFlashlight,
   triggerInteract,
   tryDirectObjectInteractAtWorldPoint,
+  upgradeShelterStation,
   useFieldMedkit,
+  VISION_CONFIG,
   WEAPON_CONFIG,
   ZOMBIE_ARCHETYPE_CONFIG,
 } from '../src/action/actionRules.ts';
@@ -350,9 +358,12 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     }
   });
 
-  it('13. Facão padronizado em 38 PV (1 alvo por golpe), ruído efetivo de 95 px (pistola 480 px) e bloqueio por parede', () => {
-    expect(WEAPON_CONFIG.facao.damage).toBe(38);
+  it('13. Balanceamento entre Facão (22 PV, 1 alvo por golpe, cadência controlada, ruído 95 px) e Pistola (24 PV, ruído 480 px) + bloqueio por parede', () => {
+    expect(WEAPON_CONFIG.facao.damage).toBe(22);
+    expect(WEAPON_CONFIG.facao.swingDuration).toBe(0.14);
+    expect(WEAPON_CONFIG.facao.cooldown).toBeGreaterThanOrEqual(0.5);
     expect(WEAPON_CONFIG.facao.noiseRadius).toBe(95);
+    expect(WEAPON_CONFIG.pistola.damage).toBe(24);
     expect(WEAPON_CONFIG.pistola.noiseRadius).toBe(480);
 
     const world = createInitialWorldState('spec_machete_cone');
@@ -371,7 +382,7 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     const res = performAttack(world);
     expect(res.type).toBe('melee');
     expect(res.hits).toBe(1);
-    expect(zFront.hp).toBe(zFront.maxHp - 38);
+    expect(zFront.hp).toBe(zFront.maxHp - 22);
     expect(zSecondInCone.hp).toBe(zSecondInCone.maxHp); // Apenas 1 acerto por golpe
     expect(zBehind.hp).toBe(zBehind.maxHp);
     expect(zFar.hp).toBe(zFar.maxHp);
@@ -598,6 +609,89 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(carBodyTouch.id).toBe('loot_porta_luvas_pickup');
     expect(pickupSpot.looted).toBe(true);
   });
+
+  it('19. Campo de visão tático (Bullet Echo FOV), bloqueio de luz por paredes, lanterna real e sinais sonoros sem expor sprites', () => {
+    const world = createInitialWorldState('spec_fov_acoustic', 'centro_comercial');
+    world.obstacles = [];
+    world.buildings = [];
+    world.player.x = 500;
+    world.player.y = 500;
+    world.player.facingAngle = 0;
+    world.ambientDarkness = 0.85;
+
+    const targetX = 780;
+    const targetY = 500;
+    expect(world.player.flashlight.enabled).toBe(true);
+    expect(evaluatePointVisibility(world, targetX, targetY)).toBe('visible');
+
+    // Desligar a lanterna reduz o alcance efetivo no escuro
+    toggleFlashlight(world);
+    expect(world.player.flashlight.enabled).toBe(false);
+    expect(evaluatePointVisibility(world, targetX, targetY)).toBe('hidden');
+
+    // Religar a lanterna com parede sólida no caminho bloqueia a visão e a luz
+    toggleFlashlight(world);
+    world.obstacles = [{ id: 'wall_fov', x: 650, y: 440, width: 18, height: 120, kind: 'wall' }];
+    expect(evaluatePointVisibility(world, targetX, targetY)).toBe('hidden');
+
+    // Inimigo em movimento atrás da parede permanece invisível, mas gera sinal acústico direcional
+    const hiddenRunner = createZombieFromArchetype('z_noisy_hidden', 'corredor', 740, 500);
+    hiddenRunner.alertState = 'hunting';
+    world.zombies = [hiddenRunner];
+
+    stepWorld(world, createDefaultInputState(), 0.1);
+    expect(hiddenRunner.isVisibleToPlayer).toBe(false);
+    expect(hiddenRunner.visibilityState).toBe('hidden');
+    expect(world.acousticCues.length).toBeGreaterThanOrEqual(1);
+    expect(VISION_CONFIG.flashlightBonusRange).toBeGreaterThan(100);
+  });
+
+  it('20. Progressão do abrigo: sobreviventes, melhorias com efeito real na incursão, avanço de dias e evacuação final', () => {
+    let stash = createInitialPersistentStash();
+    expect(stash.day).toBe(1);
+    expect(stash.survivors?.length).toBe(3);
+
+    stash.totalStash.materiais = 25;
+    stash.totalStash.medicamentos = 10;
+    stash.totalStash.comida = 20;
+    stash.totalStash.municao = 25;
+
+    const upOficina = upgradeShelterStation(stash, 'oficina');
+    expect(upOficina.ok).toBe(true);
+    stash = upOficina.stash;
+
+    const worldWithBonus = createInitialWorldState('spec_shelter_bonus', 'vila_esperanca', stash);
+    expect(worldWithBonus.maxCarryCapacity).toBe(30);
+
+    const upEnf = upgradeShelterStation(stash, 'enfermaria');
+    expect(upEnf.ok).toBe(true);
+    stash = upEnf.stash;
+
+    stash = selectActiveSurvivor(stash, 'surv_elena');
+    const worldElena = createInitialWorldState('spec_elena_run', 'vila_esperanca', stash);
+    expect(worldElena.player.maxHp).toBe(115);
+
+    worldElena.player.hp = 60;
+    worldElena.status = 'extracted';
+    stash = applyExtractionToStash(stash, worldElena);
+    expect(stash.day).toBe(2);
+    const elenaAfter = stash.survivors!.find((s) => s.id === 'surv_elena')!;
+    expect(elenaAfter.status).toBe('ferido');
+
+    const healed = healShelterSurvivor(stash, 'surv_elena');
+    expect(healed.ok).toBe(true);
+    stash = healed.stash;
+    expect(stash.survivors!.find((s) => s.id === 'surv_elena')!.hp).toBeGreaterThan(elenaAfter.hp);
+
+    stash.runsExtracted = 2;
+    stash = upgradeShelterStation(stash, 'torre_radio').stash;
+    expect(computeEvacuationProgress(stash)).toBeGreaterThan(50);
+
+    const evac = executeEvacuation(stash);
+    expect(evac.ok).toBe(true);
+    expect(evac.stash.evacuationCompleted).toBe(true);
+  });
 });
+
 
 
