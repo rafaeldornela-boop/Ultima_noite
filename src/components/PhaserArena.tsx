@@ -41,6 +41,16 @@ interface HudReadout {
   banner: string;
   distToExtractionMeters: number;
   angleToExtractionRad: number;
+  districtId: string;
+  districtName: string;
+  timeOfDay: string;
+  isInsideBuilding: boolean;
+  currentBuildingName: string | null;
+  flashlightEnabled: boolean;
+  flashlightBattery: number;
+  isHealing: boolean;
+  healingProgress: number;
+  healingDuration: number;
   minimap: MinimapSnapshot;
 }
 
@@ -68,6 +78,16 @@ function buildHudReadout(w: ActionWorldState): HudReadout {
     banner: w.lastEventBanner,
     distToExtractionMeters: minimap.extraction.distanceMeters,
     angleToExtractionRad: minimap.extraction.bearingRad,
+    districtId: w.districtId,
+    districtName: w.districtName,
+    timeOfDay: w.timeOfDay,
+    isInsideBuilding: w.isInsideBuilding,
+    currentBuildingName: w.currentBuildingName,
+    flashlightEnabled: w.player.flashlight.enabled,
+    flashlightBattery: Math.round(w.player.flashlight.battery),
+    isHealing: !!w.player.healing?.active,
+    healingProgress: w.player.healing ? w.player.healing.progress : 0,
+    healingDuration: w.player.healing ? w.player.healing.duration : 1,
     minimap,
   };
 }
@@ -380,19 +400,33 @@ export function PhaserArena({
             </div>
           </div>
 
-          {/* Top-Center Cluster: Field Radio / Status Feed (Desktop) */}
-          <div className="hidden md:flex flex-col items-center gap-1 max-w-md text-center">
-            <div className="rounded-sm bg-[#110f0d]/90 border border-[#2e2722] px-3 py-1 text-[11px] text-[#d6cec2] flex items-center gap-2.5 shadow">
+          {/* Top-Center Cluster: Field Radio, District & Time of Day */}
+          <div className="hidden md:flex flex-col items-center gap-1 max-w-lg text-center">
+            <div className="rounded-sm bg-[#110f0d]/92 border border-[#2e2722] px-3 py-1 text-[11px] text-[#d6cec2] flex items-center gap-2.5 shadow">
+              <span className="font-bold uppercase tracking-wider text-[#e09132]">
+                {hud.districtName}
+              </span>
+              <span aria-hidden="true" className="text-[#4a3e35]">|</span>
+              <span className="text-[11px] font-semibold text-[#f59e0b]">
+                {hud.timeOfDay === 'dia'
+                  ? '☀️ Dia'
+                  : hud.timeOfDay === 'entardecer'
+                  ? '🌅 Entardecer'
+                  : hud.timeOfDay === 'noite'
+                  ? '🌙 Noite'
+                  : '🌘 Madrugada'}
+              </span>
+              {hud.isInsideBuilding && (
+                <>
+                  <span aria-hidden="true" className="text-[#4a3e35]">|</span>
+                  <span className="text-[11px] font-semibold text-[#60a5fa]">
+                    🏢 {hud.currentBuildingName}
+                  </span>
+                </>
+              )}
+              <span aria-hidden="true" className="text-[#4a3e35]">|</span>
               <span className="font-bold uppercase tracking-wider text-[#52b788]">
-                Portão SO: {hud.distToExtractionMeters}m
-              </span>
-              <span aria-hidden="true" className="text-[#4a3e35]">|</span>
-              <span className="font-mono-tabular text-[#b8afa4]">
-                Abates: {hud.zombiesKilled}
-              </span>
-              <span aria-hidden="true" className="text-[#4a3e35]">|</span>
-              <span className="font-mono-tabular text-[#8c8277]">
-                Hostis: {hud.zombiesRemaining}
+                Extração: {hud.distToExtractionMeters}m
               </span>
             </div>
             <div className="text-[11px] text-[#b8afa4] bg-[#0d0b09]/85 px-2.5 py-0.5 rounded-sm border border-[#211c18]">
@@ -505,8 +539,29 @@ export function PhaserArena({
             </div>
           )}
 
-          {/* Discreet Utilitarian Tactical Action Strip (Dodge button removed per specification) */}
+          {/* Discreet Utilitarian Tactical Action Strip */}
           <div className="pointer-events-auto flex items-center justify-end gap-1.5 w-full sm:w-auto sm:self-end">
+            {/* Flashlight Toggle & Battery Readout */}
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={(e) => {
+                e.currentTarget.blur();
+                bridgeRef.current.queuedToggleFlashlight = true;
+              }}
+              className={`min-h-[42px] px-3 py-1 rounded-sm text-[11px] font-bold uppercase tracking-wider border transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                hud.flashlightEnabled
+                  ? 'bg-[#2b2416]/95 border-[#f59e0b] text-[#fef3c7] shadow-lg shadow-amber-950/40'
+                  : 'bg-[#12100e]/85 border-[#2e2722] text-[#8c8277]'
+              }`}
+            >
+              <span>🔦 Lanterna</span>
+              <span className={`font-mono text-[10px] ${hud.flashlightBattery < 20 ? 'text-[#ef4444] animate-pulse' : 'text-[#f59e0b]'}`}>
+                {hud.flashlightBattery}%
+              </span>
+              <span className="hidden sm:inline text-[9px] text-[#7a7066]">[F]</span>
+            </button>
+
             <button
               type="button"
               tabIndex={-1}
@@ -524,18 +579,29 @@ export function PhaserArena({
               <span className="hidden sm:inline"> [E]</span>
             </button>
 
+            {/* Medical Bandaging / Field Healing */}
             <button
               type="button"
               tabIndex={-1}
-              disabled={hud.lootMedicamentos <= 0 || hud.hp >= hud.maxHp}
+              disabled={hud.lootMedicamentos <= 0 || (hud.hp >= hud.maxHp && !hud.isHealing)}
               onClick={(e) => {
                 e.currentTarget.blur();
                 bridgeRef.current.queuedHeal = true;
               }}
-              className="min-h-[42px] px-3 py-1 rounded-sm bg-[#1c1210]/85 hover:bg-[#291815] disabled:opacity-40 border border-[#54221c] text-[11px] font-bold uppercase tracking-wider text-[#ebe5dc] whitespace-nowrap"
+              className={`min-h-[42px] px-3 py-1 rounded-sm border text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+                hud.isHealing
+                  ? 'bg-[#132a1f]/95 border-[#10b981] text-[#10b981] animate-pulse'
+                  : 'bg-[#1c1210]/85 hover:bg-[#291815] disabled:opacity-40 border-[#54221c] text-[#ebe5dc]'
+              }`}
             >
-              Curar ({hud.lootMedicamentos})
-              <span className="hidden sm:inline"> [H]</span>
+              {hud.isHealing ? (
+                <span>🩹 Curando ({Math.round((hud.healingProgress / hud.healingDuration) * 100)}%)...</span>
+              ) : (
+                <>
+                  <span>🩹 Curar ({hud.lootMedicamentos})</span>
+                  <span className="hidden sm:inline text-[9px] text-[#7a7066]">[H]</span>
+                </>
+              )}
             </button>
           </div>
 

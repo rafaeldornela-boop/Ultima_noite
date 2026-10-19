@@ -10,6 +10,21 @@ export type ZombieArchetype = 'lento' | 'corredor' | 'bruto';
 
 export type RunStatus = 'playing' | 'paused' | 'extracted' | 'dead';
 
+export type DistrictId = 'vila_esperanca' | 'centro_comercial' | 'complexo_medico';
+
+export type TimeOfDay = 'dia' | 'entardecer' | 'noite' | 'madrugada';
+
+export type ContainerType =
+  | 'caixa'
+  | 'mochila'
+  | 'armario'
+  | 'geladeira'
+  | 'gondola'
+  | 'porta_malas'
+  | 'cofre'
+  | 'maca'
+  | 'bancada';
+
 export interface ObstacleRect {
   id: string;
   x: number;
@@ -34,6 +49,9 @@ export interface LootSpot {
   id: string;
   label: string;
   kind: 'comida' | 'medicamentos' | 'municao' | 'materiais' | 'misto';
+  containerType: ContainerType;
+  searchDuration: number; // e.g. 0.8s for mochila, 1.2s for armario, 2.0s for cofre
+  noiseOnSearch: boolean; // squeaky cabinet/safe emits diegetic sound alerting zombies
   x: number;
   y: number;
   radius: number;
@@ -47,6 +65,22 @@ export interface ExtractionZone {
   x: number;
   y: number;
   radius: number;
+}
+
+export interface FlashlightState {
+  enabled: boolean;
+  battery: number; // 0..100%
+  maxBattery: number;
+  drainRate: number; // % consumed per second when on (e.g. 1.25%/s)
+  range: number; // illumination range in pixels (e.g. 320px)
+  coneAngle: number; // radians (e.g. 0.95 rad ~= 55 deg)
+}
+
+export interface HealingState {
+  active: boolean;
+  progress: number; // 0..duration
+  duration: number; // e.g. 2.4s
+  healAmount: number; // e.g. 35 HP
 }
 
 export interface PlayerEntity {
@@ -73,6 +107,10 @@ export interface PlayerEntity {
   attackCooldown: number;
   meleeSwingTimer: number;
   hurtFlashTimer: number;
+  flashlight: FlashlightState;
+  healing: HealingState | null;
+  isInsideBuilding: string | null;
+  currentBuildingName: string | null;
 }
 
 export interface ZombieEntity {
@@ -85,6 +123,11 @@ export interface ZombieEntity {
   vy: number;
   radius: number;
   facingAngle: number;
+  visionConeAngle: number; // radians (e.g. 1.3 rad ~= 75 deg)
+  visionRange: number; // base detection sight distance
+  alertState: 'idle' | 'patrol' | 'investigating' | 'hunting';
+  alertTimer: number;
+  targetPoint: { x: number; y: number } | null;
   hp: number;
   maxHp: number;
   speed: number;
@@ -135,6 +178,7 @@ export interface ActionInputState {
   reloadJustPressed: boolean;
   switchWeaponJustPressed: boolean;
   healJustPressed: boolean;
+  toggleFlashlightJustPressed: boolean;
 }
 
 export interface InteractPrompt {
@@ -164,6 +208,13 @@ export interface ActiveLootingState {
 
 export interface ActionWorldState {
   runId: string;
+  districtId: DistrictId;
+  districtName: string;
+  timeOfDay: TimeOfDay;
+  dayNightClock: number; // seconds into expedition
+  ambientDarkness: number; // 0.15 (bright day) to 0.82 (pitch night)
+  isInsideBuilding: boolean;
+  currentBuildingName: string | null;
   status: RunStatus;
   elapsedTime: number;
   hitstopTimer: number;

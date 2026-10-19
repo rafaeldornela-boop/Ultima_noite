@@ -4,6 +4,7 @@ import {
   type ActionLootBag,
   type ActionWorldState,
   type BulletEntity,
+  type DistrictId,
   type InteractPrompt,
   type MinimapSnapshot,
   type ObstacleRect,
@@ -14,6 +15,7 @@ import {
 import {
   BUILDINGS,
   EXTRACTION_ZONE,
+  getDistrictDefinition,
   INITIAL_LOOT_SPOTS,
   INITIAL_ZOMBIE_SPAWNS,
   MAP_OBSTACLES,
@@ -68,6 +70,11 @@ export function createZombieFromArchetype(
       vy: 0,
       radius: 14,
       facingAngle: 0,
+      visionConeAngle: 1.5, // ~86 degrees
+      visionRange: 270,
+      alertState: 'idle',
+      alertTimer: 0,
+      targetPoint: null,
       hp: 30,
       maxHp: 30,
       speed: 128,
@@ -97,6 +104,11 @@ export function createZombieFromArchetype(
       vy: 0,
       radius: 22,
       facingAngle: 0,
+      visionConeAngle: 1.2, // ~68 degrees
+      visionRange: 220,
+      alertState: 'idle',
+      alertTimer: 0,
+      targetPoint: null,
       hp: 120,
       maxHp: 120,
       speed: 45,
@@ -125,6 +137,11 @@ export function createZombieFromArchetype(
     vy: 0,
     radius: 16,
     facingAngle: 0,
+    visionConeAngle: 1.35, // ~77 degrees
+    visionRange: 240,
+    alertState: 'idle',
+    alertTimer: 0,
+    targetPoint: null,
     hp: 45,
     maxHp: 45,
     speed: 62,
@@ -143,18 +160,30 @@ export function createZombieFromArchetype(
   };
 }
 
-export function createInitialWorldState(runId?: string): ActionWorldState {
+export function createInitialWorldState(
+  runId?: string,
+  districtId: DistrictId = 'vila_esperanca'
+): ActionWorldState {
+  const def = getDistrictDefinition(districtId);
+
   const world: ActionWorldState = {
     runId: runId ?? `run_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+    districtId: def.id,
+    districtName: def.name,
+    timeOfDay: def.initialTimeOfDay,
+    dayNightClock: 0,
+    ambientDarkness: def.initialTimeOfDay === 'noite' ? 0.78 : def.initialTimeOfDay === 'madrugada' ? 0.65 : def.initialTimeOfDay === 'entardecer' ? 0.45 : 0.18,
+    isInsideBuilding: false,
+    currentBuildingName: null,
     status: 'playing',
     elapsedTime: 0,
     hitstopTimer: 0,
     cameraShakeTrauma: 0,
-    worldWidth: WORLD_WIDTH,
-    worldHeight: WORLD_HEIGHT,
+    worldWidth: def.worldWidth,
+    worldHeight: def.worldHeight,
     player: {
-      x: PLAYER_SPAWN.x,
-      y: PLAYER_SPAWN.y,
+      x: def.playerSpawn.x,
+      y: def.playerSpawn.y,
       vx: 0,
       vy: 0,
       radius: 16,
@@ -176,18 +205,29 @@ export function createInitialWorldState(runId?: string): ActionWorldState {
       attackCooldown: 0,
       meleeSwingTimer: 0,
       hurtFlashTimer: 0,
+      flashlight: {
+        enabled: true,
+        battery: 100,
+        maxBattery: 100,
+        drainRate: 1.15, // lasts ~85s of continuous light
+        range: 320,
+        coneAngle: 0.95,
+      },
+      healing: null,
+      isInsideBuilding: null,
+      currentBuildingName: null,
     },
-    zombies: INITIAL_ZOMBIE_SPAWNS.map((s, idx) =>
+    zombies: def.zombies.map((s, idx) =>
       createZombieFromArchetype(s.id, s.archetype, s.x, s.y, idx)
     ),
     bullets: [],
-    lootSpots: INITIAL_LOOT_SPOTS.map((l) => ({
+    lootSpots: def.lootSpots.map((l) => ({
       ...l,
       contents: { ...l.contents },
     })),
-    obstacles: MAP_OBSTACLES.map((o) => ({ ...o })),
-    buildings: BUILDINGS.map((b) => ({ ...b })),
-    extractionZone: { ...EXTRACTION_ZONE },
+    obstacles: def.obstacles.map((o) => ({ ...o })),
+    buildings: def.buildings.map((b) => ({ ...b })),
+    extractionZone: { ...def.extractionZone },
     runLoot: {
       comida: 0,
       medicamentos: 1, // Starts with 1 emergency field bandage
@@ -197,7 +237,7 @@ export function createInitialWorldState(runId?: string): ActionWorldState {
     zombiesKilled: 0,
     shotsFired: 0,
     activePrompt: null,
-    lastEventBanner: 'Explore o bairro, recolha suprimentos e extraia no Portão do Abrigo.',
+    lastEventBanner: `${def.name}: Explore o setor, vasculhe os móveis e extraia com vida.`,
     feedbacks: [],
     extractionProcessed: false,
     activeLooting: null,
@@ -206,6 +246,53 @@ export function createInitialWorldState(runId?: string): ActionWorldState {
 
   world.activePrompt = findNearestInteractable(world);
   return world;
+}
+
+export function toggleFlashlight(world: ActionWorldState): boolean {
+  const f = world.player.flashlight;
+  if (f.battery <= 0) {
+    f.enabled = false;
+    world.lastEventBanner = 'Bateria descarregada! Encontre pilhas ou materiais.';
+    addFloatingFeedback(world, 'Sem Bateria', world.player.x, world.player.y - 24, '#94a3b8');
+    return false;
+  }
+  f.enabled = !f.enabled;
+  world.lastEventBanner = f.enabled ? 'Lanterna ligada.' : 'Lanterna apagada.';
+  return f.enabled;
+}
+
+export function startHealing(world: ActionWorldState): boolean {
+  const p = world.player;
+  if (world.status !== 'playing') return false;
+  if (world.runLoot.medicamentos <= 0) {
+    world.lastEventBanner = 'Sem medicamentos ou ataduras na mochila!';
+    addFloatingFeedback(world, 'Sem Medicamentos', p.x, p.y - 24, '#ef4444');
+    return false;
+  }
+  if (p.hp >= p.maxHp) {
+    world.lastEventBanner = 'Saúde plena. Medicamento preservado.';
+    addFloatingFeedback(world, 'Saúde Plena', p.x, p.y - 24, '#10b981');
+    return false;
+  }
+  if (p.healing?.active) return false;
+
+  p.healing = {
+    active: true,
+    progress: 0,
+    duration: 2.2, // 2.2 seconds channel duration
+    healAmount: 35,
+  };
+  world.lastEventBanner = 'Aplicando atadura de campo... Mantenha-se protegido!';
+  addFloatingFeedback(world, 'Aplicando Atadura...', p.x, p.y - 24, '#10b981');
+  return true;
+}
+
+export function cancelHealing(world: ActionWorldState, reason = 'Cura cancelada!'): void {
+  if (world.player.healing?.active) {
+    world.player.healing = null;
+    addFloatingFeedback(world, reason, world.player.x, world.player.y - 28, '#ef4444');
+    world.lastEventBanner = reason;
+  }
 }
 
 export function emitNoise(
@@ -237,6 +324,9 @@ export function emitNoise(
     if (dist <= radius) {
       // Direct detection: zombie turns towards sound origin and becomes immediately alerted
       z.facingAngle = Math.atan2(y - z.y, x - z.x);
+      z.alertState = 'hunting';
+      z.alertTimer = 6.0;
+      z.targetPoint = { x, y };
     }
   }
 
@@ -259,6 +349,7 @@ export function createDefaultInputState(): ActionInputState {
     reloadJustPressed: false,
     switchWeaponJustPressed: false,
     healJustPressed: false,
+    toggleFlashlightJustPressed: false,
   };
 }
 
@@ -566,6 +657,15 @@ export function applyDamageToPlayer(
   world.hitstopTimer = 0.05;
   world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.45);
 
+  // Cancel any active healing canalization or looting
+  if (p.healing?.active) {
+    cancelHealing(world, 'Atingido! Aplicação de atadura cancelada!');
+  }
+  if (world.activeLooting) {
+    world.activeLooting = null;
+    addFloatingFeedback(world, 'Vasculhamento interrompido!', p.x, p.y - 32, '#ef4444');
+  }
+
   addFloatingFeedback(world, `-${actualDamage} PV`, p.x, p.y - 24, '#ef4444');
   world.lastEventBanner = `Atingido por ${attackerName} (-${actualDamage} PV)!`;
 
@@ -720,12 +820,6 @@ export function stepWorld(
     }
   }
 
-  // Hitstop freeze timer pauses simulation physics briefly on heavy hits
-  if (world.hitstopTimer > 0) {
-    world.hitstopTimer = Math.max(0, world.hitstopTimer - dt);
-    return world;
-  }
-
   const p = world.player;
 
   // Timers
@@ -738,7 +832,7 @@ export function stepWorld(
 
   finishReloadIfReady(world, dt);
 
-  // One-shot actions
+  // One-shot player inputs (processed immediately so buffers are never dropped)
   if (input.switchWeaponJustPressed) {
     p.equippedWeapon = p.equippedWeapon === 'pistola' ? 'facao' : 'pistola';
     p.reloadTimer = 0;
@@ -752,13 +846,80 @@ export function stepWorld(
     startReload(world);
   }
 
+  if (input.toggleFlashlightJustPressed) {
+    toggleFlashlight(world);
+  }
+
   if (input.healJustPressed) {
-    useFieldMedkit(world);
+    startHealing(world);
   }
 
   if (input.interactJustPressed) {
     triggerInteract(world);
     if (world.status !== 'playing') return world;
+  }
+
+  // Hitstop freeze pauses physical simulation physics on heavy hits
+  if (world.hitstopTimer > 0) {
+    world.hitstopTimer = Math.max(0, world.hitstopTimer - dt);
+    return world;
+  }
+
+  // --- Day / Night Cycle & Dynamic Lighting Clock ---
+  world.dayNightClock = (world.dayNightClock + dt) % 180;
+  if (world.dayNightClock < 45) {
+    world.timeOfDay = 'dia';
+    world.ambientDarkness = 0.16;
+  } else if (world.dayNightClock < 90) {
+    world.timeOfDay = 'entardecer';
+    world.ambientDarkness = 0.44;
+  } else if (world.dayNightClock < 150) {
+    world.timeOfDay = 'noite';
+    world.ambientDarkness = 0.78;
+  } else {
+    world.timeOfDay = 'madrugada';
+    world.ambientDarkness = 0.60;
+  }
+
+  // --- Building Interior Check (Indoor Roof Shadow & Ambiance) ---
+  const currentBuilding = world.buildings.find(
+    (b) => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height
+  );
+  if (currentBuilding) {
+    world.isInsideBuilding = true;
+    world.currentBuildingName = currentBuilding.name;
+    p.isInsideBuilding = currentBuilding.id;
+    p.currentBuildingName = currentBuilding.name;
+    world.ambientDarkness = Math.max(world.ambientDarkness, 0.68);
+  } else {
+    world.isInsideBuilding = false;
+    world.currentBuildingName = null;
+    p.isInsideBuilding = null;
+    p.currentBuildingName = null;
+  }
+
+  // --- Flashlight Battery Drain ---
+  if (p.flashlight.enabled) {
+    p.flashlight.battery = Math.max(0, p.flashlight.battery - p.flashlight.drainRate * dt);
+    if (p.flashlight.battery <= 0) {
+      p.flashlight.enabled = false;
+      world.lastEventBanner = 'A bateria da lanterna apagou!';
+      addFloatingFeedback(world, 'Bateria Esgotada', p.x, p.y - 28, '#94a3b8');
+    }
+  }
+
+  // --- Field Bandage / Medical Healing Canalization ---
+  if (p.healing?.active) {
+    p.healing.progress += dt;
+    if (p.healing.progress >= p.healing.duration) {
+      world.runLoot.medicamentos = Math.max(0, world.runLoot.medicamentos - 1);
+      const beforeHp = p.hp;
+      p.hp = Math.min(p.maxHp, p.hp + p.healing.healAmount);
+      const gained = Math.round(p.hp - beforeHp);
+      p.healing = null;
+      addFloatingFeedback(world, `+${gained} PV Curado`, p.x, p.y - 28, '#10b981');
+      world.lastEventBanner = `Atadura aplicada com sucesso (+${gained} PV)!`;
+    }
   }
 
   // Movement & Dodge / Sprint
@@ -775,6 +936,9 @@ export function stepWorld(
       moveMag > 0.05 ? Math.atan2(normY, normX) : p.facingAngle;
     p.vx = Math.cos(dodgeAngle) * 390;
     p.vy = Math.sin(dodgeAngle) * 390;
+    if (p.healing?.active) {
+      cancelHealing(world, 'Esquiva interrompeu o curativo!');
+    }
   } else if (p.dodgeTimer <= 0) {
     const wantsSprint = input.sprintHeld && moveMag > 0.1 && p.stamina > 4;
     p.sprinting = wantsSprint;
@@ -786,7 +950,9 @@ export function stepWorld(
     }
 
     const baseSpeed = 185;
-    const speedMultiplier = wantsSprint ? 1.42 : 1.0;
+    // When actively bandaging wounds, speed is reduced to cautious crawl
+    const healingSpeedMod = p.healing?.active ? 0.38 : 1.0;
+    const speedMultiplier = (wantsSprint ? 1.42 : 1.0) * healingSpeedMod;
     const targetVx = normX * baseSpeed * speedMultiplier;
     const targetVy = normY * baseSpeed * speedMultiplier;
     const accelRate = moveMag > 0.05 ? 18 : 14;
@@ -815,24 +981,30 @@ export function stepWorld(
     }
   }
 
-  // Automatic Proximity Looting System:
-  // When player is within range of an unlooted crate, looting progresses automatically over 0.9s.
-  // Visual progress is displayed, noise is generated (110px radius), delivered once, and resets if leaving range or interrupted.
+  // Automatic Proximity Looting with Furniture-Specific Duration & Squeak Noise:
   const nearestLoot = world.lootSpots.find(
     (s) => !s.looted && Math.hypot(s.x - p.x, s.y - p.y) <= s.radius + p.radius + 26
   );
 
   if (nearestLoot) {
+    const duration = nearestLoot.searchDuration || 1.0;
     if (!world.activeLooting || world.activeLooting.spotId !== nearestLoot.id) {
       world.activeLooting = {
         spotId: nearestLoot.id,
         progress: 0,
-        duration: 0.9,
+        duration,
       };
-      // Loot rustling noise
-      emitNoise(world, nearestLoot.x, nearestLoot.y, 110, 'loot');
+      // Opening drawer / rustling sound
+      emitNoise(world, nearestLoot.x, nearestLoot.y, 90, 'loot');
     } else {
+      const prevProg = world.activeLooting.progress;
       world.activeLooting.progress += dt;
+
+      // Diegetic container noise at midpoint if container squeaks
+      if (nearestLoot.noiseOnSearch && prevProg < duration * 0.5 && world.activeLooting.progress >= duration * 0.5) {
+        emitNoise(world, nearestLoot.x, nearestLoot.y, 130, 'loot');
+      }
+
       if (world.activeLooting.progress >= world.activeLooting.duration) {
         // Complete loot action
         nearestLoot.looted = true;
@@ -889,6 +1061,9 @@ export function stepWorld(
 
   // Attack handling (supports attacking while moving)
   if (input.attackJustPressed || input.attackHeld) {
+    if (p.healing?.active) {
+      cancelHealing(world, 'Disparo interrompeu o curativo!');
+    }
     performAttack(world);
   }
 
@@ -939,7 +1114,7 @@ export function stepWorld(
     }
   }
 
-  // Step Zombies: AI tracks sight detection OR acoustic alerts from noise events
+  // Step Zombies: Directional Sight + Acoustic Detection AI
   let activeWindups = 0;
   for (let i = world.zombies.length - 1; i >= 0; i--) {
     const z = world.zombies[i];
@@ -975,21 +1150,73 @@ export function stepWorld(
     const dy = p.y - z.y;
     const distToPlayer = Math.hypot(dx, dy);
 
-    // Check if player is detected visually OR via acoustic noise events
-    let isAlerted = distToPlayer <= z.detectionRange;
+    // --- SENSORY REACTION: Directional Vision Cone + Flashlight Illumination ---
+    const angleToPlayer = Math.atan2(dy, dx);
+    const angleDiff = Math.abs(
+      ((angleToPlayer - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+    );
+    const inVisionCone = angleDiff <= z.visionConeAngle * 0.5;
+
+    // Base effective sight range: daylight vs dark
+    let effectiveSightRange = z.visionRange;
+    if (world.ambientDarkness > 0.5) {
+      effectiveSightRange = 95; // drastically reduced sight in deep night / dark interiors
+    }
+
+    // Flashlight detection: if player flashlight is ON, light reflects and alerts zombie from far
+    if (p.flashlight.enabled) {
+      const anglePlayerToZ = Math.abs(
+        ((Math.atan2(-dy, -dx) - p.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+      );
+      const isLitByFlashlight = anglePlayerToZ <= p.flashlight.coneAngle * 0.5 && distToPlayer <= p.flashlight.range;
+      if (isLitByFlashlight || distToPlayer <= 260) {
+        effectiveSightRange = Math.max(effectiveSightRange, 280);
+      }
+    }
+
+    let isAlerted = false;
     let targetX = p.x;
     let targetY = p.y;
 
+    if (inVisionCone && distToPlayer <= effectiveSightRange) {
+      isAlerted = true;
+      z.alertState = 'hunting';
+      z.alertTimer = 6.0;
+      z.targetPoint = { x: p.x, y: p.y };
+    } else if (distToPlayer <= 110) {
+      // Close footstep / breathing / odor detection even from behind
+      isAlerted = true;
+      z.alertState = 'hunting';
+      z.alertTimer = 4.0;
+      z.targetPoint = { x: p.x, y: p.y };
+    }
+
+    // --- Acoustic Hearing Detection from Active Noise Events ---
     if (!isAlerted) {
-      // Check for any active noise event within hearing radius of zombie
       for (const ne of world.noiseEvents) {
         const distToNoise = Math.hypot(ne.x - z.x, ne.y - z.y);
         if (distToNoise <= ne.radius) {
           isAlerted = true;
+          z.alertState = 'hunting';
+          z.alertTimer = 5.0;
           targetX = ne.x;
           targetY = ne.y;
+          z.targetPoint = { x: ne.x, y: ne.y };
           break;
         }
+      }
+    }
+
+    // Residual hunting alert decay
+    if (!isAlerted && z.alertState === 'hunting' && z.alertTimer > 0) {
+      z.alertTimer -= dt;
+      if (z.alertTimer > 0 && z.targetPoint) {
+        isAlerted = true;
+        targetX = z.targetPoint.x;
+        targetY = z.targetPoint.y;
+      } else {
+        z.alertState = 'idle';
+        z.targetPoint = null;
       }
     }
 

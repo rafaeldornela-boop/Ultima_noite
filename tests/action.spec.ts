@@ -239,5 +239,91 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(extMap.extraction.distanceMeters).toBe(0);
     expect(extMap.player.insideExtraction).toBe(true);
   });
+
+  it('8. Suporta múltiplos distritos com layouts, móveis e sons de ambiente', () => {
+    const vila = createInitialWorldState('spec_dist_vila', 'vila_esperanca');
+    expect(vila.districtId).toBe('vila_esperanca');
+    expect(vila.lootSpots.some((s) => s.containerType === 'geladeira')).toBe(true);
+    expect(vila.lootSpots.some((s) => s.containerType === 'armario')).toBe(true);
+
+    const centro = createInitialWorldState('spec_dist_centro', 'centro_comercial');
+    expect(centro.districtId).toBe('centro_comercial');
+    expect(centro.lootSpots.some((s) => s.containerType === 'cofre')).toBe(true);
+    expect(centro.lootSpots.some((s) => s.containerType === 'gondola')).toBe(true);
+
+    const medico = createInitialWorldState('spec_dist_med', 'complexo_medico');
+    expect(medico.districtId).toBe('complexo_medico');
+    expect(medico.lootSpots.some((s) => s.containerType === 'maca')).toBe(true);
+    expect(medico.buildings.some((b) => b.name.includes('Pronto-Socorro'))).toBe(true);
+  });
+
+  it('9. Lanterna consome bateria e desliga automaticamente ao esgotar', () => {
+    const world = createInitialWorldState('spec_flashlight');
+    expect(world.player.flashlight.enabled).toBe(true);
+    expect(world.player.flashlight.battery).toBe(100);
+
+    for (let i = 0; i < 100; i++) {
+      stepWorld(world, createDefaultInputState(), 0.1);
+    }
+    expect(world.player.flashlight.battery).toBeLessThan(100);
+    expect(world.player.flashlight.battery).toBeGreaterThan(50);
+
+    world.player.flashlight.battery = 0.05;
+    stepWorld(world, createDefaultInputState(), 0.1);
+    expect(world.player.flashlight.enabled).toBe(false);
+    expect(world.player.flashlight.battery).toBe(0);
+  });
+
+  it('10. Cura canalizada requer tempo e é interrompida por dano preservando o recurso', () => {
+    const world = createInitialWorldState('spec_healing');
+    world.player.hp = 40;
+    world.runLoot.medicamentos = 2;
+
+    const inp = createDefaultInputState();
+    inp.healJustPressed = true;
+    stepWorld(world, inp, 0.05);
+
+    expect(world.player.healing).not.toBeNull();
+    expect(world.player.healing?.active).toBe(true);
+    expect(world.player.hp).toBe(40);
+
+    applyDamageToPlayer(world, 10, 'Errante');
+    expect(world.player.healing).toBeNull();
+    expect(world.runLoot.medicamentos).toBe(2);
+
+    inp.healJustPressed = true;
+    stepWorld(world, inp, 0.05);
+    for (let i = 0; i < 50; i++) {
+      stepWorld(world, createDefaultInputState(), 0.05);
+    }
+
+    expect(world.player.healing).toBeNull();
+    expect(world.player.hp).toBe(65);
+    expect(world.runLoot.medicamentos).toBe(1);
+  });
+
+  it('11. Visão direcional e aproximação furtiva pelas costas de zumbis', () => {
+    const world = createInitialWorldState('spec_stealth');
+    const z = createZombieFromArchetype('z_look_east', 'lento', 500, 500);
+    z.facingAngle = 0;
+    world.zombies = [z];
+
+    world.player.x = 350;
+    world.player.y = 500;
+    world.player.flashlight.enabled = false;
+    world.ambientDarkness = 0.75;
+
+    stepWorld(world, createDefaultInputState(), 0.05);
+    expect(z.alertState).toBe('idle');
+    expect(z.vx).toBe(0);
+
+    world.player.x = 650;
+    world.player.y = 500;
+    world.player.flashlight.enabled = true;
+
+    stepWorld(world, createDefaultInputState(), 0.05);
+    expect(z.alertState).toBe('hunting');
+    expect(z.vx).toBeGreaterThan(0);
+  });
 });
 

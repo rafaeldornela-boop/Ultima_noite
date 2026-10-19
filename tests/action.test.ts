@@ -185,3 +185,99 @@ test('Top-Down Action: botão de disparo inicia recarga quando o pente está vaz
   assert.equal(world.player.ammoReserve, 0);
 });
 
+test('Top-Down Action: múltiplos distritos com layouts, móveis e sons de ambiente', () => {
+  const vila = createInitialWorldState('node_dist_vila', 'vila_esperanca');
+  assert.equal(vila.districtId, 'vila_esperanca');
+  assert.ok(vila.lootSpots.some((s) => s.containerType === 'geladeira'));
+  assert.ok(vila.lootSpots.some((s) => s.containerType === 'armario'));
+
+  const centro = createInitialWorldState('node_dist_centro', 'centro_comercial');
+  assert.equal(centro.districtId, 'centro_comercial');
+  assert.ok(centro.lootSpots.some((s) => s.containerType === 'cofre'));
+  assert.ok(centro.lootSpots.some((s) => s.containerType === 'gondola'));
+
+  const medico = createInitialWorldState('node_dist_med', 'complexo_medico');
+  assert.equal(medico.districtId, 'complexo_medico');
+  assert.ok(medico.lootSpots.some((s) => s.containerType === 'maca'));
+  assert.ok(medico.buildings.some((b) => b.name.includes('Pronto-Socorro')));
+});
+
+test('Top-Down Action: lanterna consome bateria e desliga ao esgotar', () => {
+  const world = createInitialWorldState('node_flashlight');
+  assert.equal(world.player.flashlight.enabled, true);
+  assert.equal(world.player.flashlight.battery, 100);
+
+  // Step 10 seconds with flashlight on
+  for (let i = 0; i < 100; i++) {
+    stepWorld(world, createDefaultInputState(), 0.1);
+  }
+  assert.ok(world.player.flashlight.battery < 100);
+  assert.ok(world.player.flashlight.battery > 50);
+
+  // Deplete battery to 0
+  world.player.flashlight.battery = 0.05;
+  stepWorld(world, createDefaultInputState(), 0.1);
+  assert.equal(world.player.flashlight.enabled, false);
+  assert.equal(world.player.flashlight.battery, 0);
+});
+
+test('Top-Down Action: cura por atadura requer canalização de tempo e cancela ao sofrer dano', () => {
+  const world = createInitialWorldState('node_healing');
+  world.player.hp = 40;
+  world.runLoot.medicamentos = 2;
+
+  const inp = createDefaultInputState();
+  inp.healJustPressed = true;
+  stepWorld(world, inp, 0.05);
+
+  assert.ok(world.player.healing !== null);
+  assert.equal(world.player.healing?.active, true);
+  assert.equal(world.player.hp, 40); // Not healed immediately!
+
+  // Suffering damage cancels healing immediately
+  applyDamageToPlayer(world, 10, 'Errante');
+  assert.equal(world.player.healing, null);
+  assert.equal(world.runLoot.medicamentos, 2); // Medkit preserved because heal was cancelled!
+
+  // Re-start healing and step through full duration (2.2s)
+  inp.healJustPressed = true;
+  stepWorld(world, inp, 0.05);
+  for (let i = 0; i < 50; i++) {
+    stepWorld(world, createDefaultInputState(), 0.05);
+  }
+
+  assert.equal(world.player.healing, null);
+  assert.equal(world.player.hp, 65); // 30 + 35 = 65 PV
+  assert.equal(world.runLoot.medicamentos, 1);
+});
+
+test('Top-Down Action: visão direcional e furtividade pelas costas de zumbis', () => {
+  const world = createInitialWorldState('node_stealth');
+  // Place zombie facing East (angle = 0)
+  const z = createZombieFromArchetype('z_look_east', 'lento', 500, 500);
+  z.facingAngle = 0; // Looking East (to the right)
+  world.zombies = [z];
+
+  // Player stands directly behind zombie at x=350, y=500 (150px West)
+  world.player.x = 350;
+  world.player.y = 500;
+  world.player.flashlight.enabled = false;
+  world.ambientDarkness = 0.75; // Night darkness
+
+  stepWorld(world, createDefaultInputState(), 0.05);
+  // Zombie does NOT see the player because player is behind the zombie's vision cone
+  assert.equal(z.alertState, 'idle');
+  assert.equal(z.vx, 0);
+
+  // Now player moves into the zombie's frontal cone at x=650, y=500 (East of zombie)
+  world.player.x = 650;
+  world.player.y = 500;
+  world.player.flashlight.enabled = true; // Flashlight beam illuminates into zombie's front!
+
+  stepWorld(world, createDefaultInputState(), 0.05);
+  // Zombie detects player visually in its front cone!
+  assert.equal(z.alertState, 'hunting');
+  assert.ok(z.vx > 0); // Advances East towards player
+});
+
+

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import type { PersistentShelterStash } from '../action/actionTypes.ts';
+import type { DistrictId, PersistentShelterStash } from '../action/actionTypes.ts';
+import { DISTRICTS } from '../action/mapData.ts';
 import {
   ResourceIconSvg,
   TitleBackdropSvg,
@@ -8,7 +9,7 @@ import {
 
 interface TitleScreenProps {
   stash: PersistentShelterStash;
-  onStartGame: () => void;
+  onStartGame: (districtId: DistrictId) => void;
   onResetStash: () => void;
 }
 
@@ -18,17 +19,18 @@ export function TitleScreen({
   onResetStash,
 }: TitleScreenProps) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [selectedDistrict, setSelectedDistrict] = useState<DistrictId>('vila_esperanca');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        onStartGame();
+        onStartGame(selectedDistrict);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onStartGame]);
+  }, [onStartGame, selectedDistrict]);
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[#0e0c0a] flex flex-col justify-between p-5 sm:p-10 select-none">
@@ -116,6 +118,52 @@ export function TitleScreen({
           </div>
         </div>
 
+        {/* District Exploration Selector */}
+        <div className="w-full space-y-1.5" aria-label="Seleção do Distrito de Incursão">
+          <div className="flex items-center justify-between text-[11px]">
+            <span className="font-bold uppercase tracking-wider text-[#c87a28]">
+              Setor de Operação
+            </span>
+            <span className="text-[#8c8277]">
+              {selectedDistrict === 'vila_esperanca'
+                ? '🍃 Vento Uivante & Becos'
+                : selectedDistrict === 'centro_comercial'
+                ? '🚨 Sirenes Distantes & Avenidas'
+                : '⚡ Geradores & Corredores'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {DISTRICTS.map((d) => {
+              const isSelected = selectedDistrict === d.id;
+              return (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => setSelectedDistrict(d.id)}
+                  className={`text-left p-2.5 rounded-sm border transition-all ${
+                    isSelected
+                      ? 'bg-[#1e1713] border-[#e09132] shadow-md shadow-amber-950/40 ring-1 ring-[#e09132]'
+                      : 'bg-[#100e0c]/90 border-[#2b241e] hover:border-[#4a3e35]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className={`text-xs font-bold uppercase tracking-wide ${isSelected ? 'text-[#e09132]' : 'text-[#ebe5dc]'}`}>
+                      {d.id === 'vila_esperanca' ? '1. Residencial' : d.id === 'centro_comercial' ? '2. Comercial' : '3. Hospitalar'}
+                    </span>
+                    <span className="text-[10px] text-[#8c8277]">
+                      {d.initialTimeOfDay === 'noite' ? '🌙 Noite' : d.initialTimeOfDay === 'madrugada' ? '🌘 Escuro' : '🌅 Crepúsculo'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-[#a89d91] line-clamp-1 mt-0.5">
+                    {d.name}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Primary & Secondary CTAs (Utilitarian Tactical Buttons) */}
         <div className="w-full sm:w-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
           <button
@@ -123,7 +171,7 @@ export function TitleScreen({
             data-start="true"
             onClick={(e) => {
               e.currentTarget.blur();
-              onStartGame();
+              onStartGame(selectedDistrict);
             }}
             className="min-h-[48px] px-8 py-3 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] active:scale-[0.99] text-[#f5f0e6] font-display text-base sm:text-lg font-bold tracking-[0.14em] uppercase transition-colors shadow-lg shadow-black/60 whitespace-nowrap"
           >

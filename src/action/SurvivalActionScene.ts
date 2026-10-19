@@ -36,6 +36,7 @@ export interface ExternalControlBridge {
   queuedReload: boolean;
   queuedSwitchWeapon: boolean;
   queuedHeal: boolean;
+  queuedToggleFlashlight: boolean;
   reducedEffects: boolean;
 }
 
@@ -52,6 +53,7 @@ export function createExternalControlBridge(): ExternalControlBridge {
     queuedReload: false,
     queuedSwitchWeapon: false,
     queuedHeal: false,
+    queuedToggleFlashlight: false,
     reducedEffects: false,
   };
 }
@@ -93,6 +95,8 @@ export class SurvivalActionScene extends Phaser.Scene {
   private prevLootTotal = 0;
   private prevMeleeTimer = 0;
   private prevReloadTimer = 0;
+  private prevFlashlightOn = true;
+  private prevHealingActive = false;
   private zombiePrevHp = new Map<string, number>();
   private shotFlashTimer = 0;
   private walkAnimTime = 0;
@@ -129,6 +133,8 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.prevZombiesKilled = world.zombiesKilled;
     this.prevPlayerHp = world.player.hp;
     this.prevReloadTimer = world.player.reloadTimer;
+    this.prevFlashlightOn = world.player.flashlight.enabled;
+    this.prevHealingActive = !!world.player.healing?.active;
     this.prevLootTotal =
       world.runLoot.comida +
       world.runLoot.medicamentos +
@@ -658,7 +664,10 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     input.interactJustPressed =
       this.bridge.queuedInteract ||
-      this.justPressedKeys.has('KeyE') ||
+      this.justPressedKeys.has('KeyE');
+
+    input.toggleFlashlightJustPressed =
+      this.bridge.queuedToggleFlashlight ||
       this.justPressedKeys.has('KeyF');
 
     input.reloadJustPressed =
@@ -697,12 +706,42 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.bridge.queuedReload = false;
     this.bridge.queuedSwitchWeapon = false;
     this.bridge.queuedHeal = false;
+    this.bridge.queuedToggleFlashlight = false;
 
     // Step simulation
     stepWorld(this.worldState, input, rawDt);
 
     const p = this.worldState.player;
     this.shotFlashTimer = Math.max(0, this.shotFlashTimer - clampedDt);
+
+    // Update continuous procedural ambient soundscape based on active district and indoor presence
+    soundFX.setAmbientDistrict(
+      this.worldState.districtId === 'centro_comercial'
+        ? 'commercial'
+        : this.worldState.districtId === 'complexo_medico'
+        ? 'medical'
+        : 'residential',
+      this.worldState.isInsideBuilding
+    );
+
+    // Flashlight switch click audio
+    if (p.flashlight.enabled !== this.prevFlashlightOn) {
+      soundFX.playFlashlight(p.flashlight.enabled);
+      this.prevFlashlightOn = p.flashlight.enabled;
+    }
+
+    // Healing channel audio
+    if (p.healing?.active && !this.prevHealingActive) {
+      soundFX.playHealingProgress();
+      this.prevHealingActive = true;
+    } else if (!p.healing?.active && this.prevHealingActive) {
+      this.prevHealingActive = false;
+    }
+
+    // Healing completed audio chime
+    if (p.hp > this.prevPlayerHp) {
+      soundFX.playHealingComplete();
+    }
 
     // Trigger reload audio when reload starts
     if (p.reloadTimer > 0 && this.prevReloadTimer <= 0) {
@@ -1090,6 +1129,20 @@ export class SurvivalActionScene extends Phaser.Scene {
     // 7. Floating Combat / Loot Feedbacks
     // (Rendered cleanly via Phaser graphics/text or HUD banner)
 
+    // Healing canalization progress arc and medical cross badge over player
+    if (p.healing?.active) {
+      const hProg = Math.min(1, p.healing.progress / p.healing.duration);
+      dG.lineStyle(3, 0x10b981, 0.95);
+      dG.beginPath();
+      dG.arc(p.x, p.y, p.radius + 18, -Math.PI / 2, -Math.PI / 2 + hProg * Math.PI * 2, false);
+      dG.strokePath();
+
+      const crossY = p.y - p.radius - 22;
+      dG.fillStyle(0x10b981, 0.95);
+      dG.fillRect(p.x - 2, crossY - 6, 4, 12);
+      dG.fillRect(p.x - 6, crossY - 2, 12, 4);
+    }
+
     // 8. Atmospheric Darkness & Directional Flashlight Cone (Darkwood / Project Zomboid mood)
     this.renderAtmosphericLighting(lG);
   }
@@ -1098,34 +1151,61 @@ export class SurvivalActionScene extends Phaser.Scene {
     const w = this.worldState;
     const p = w.player;
 
-    // Warm directional flashlight cone projecting from survivor
-    const beamLength = 340;
-    const halfCone = 0.52; // ~60 degree flashlight spread
-    const a1 = p.facingAngle - halfCone;
-    const a2 = p.facingAngle + halfCone;
+    // 1. Full-screen ambient atmospheric darkness based on day/night cycle & building interior
+    const darknessAlpha = Math.min(0.85, Math.max(0.12, w.ambientDarkness));
+    lG.fillStyle(0x06080b, darknessAlpha);
+    lG.fillRect(0, 0, w.worldWidth, w.worldHeight);
 
-    // Outer warm flashlight beam glow
-    lG.fillStyle(0xf5deb3, 0.08);
-    lG.beginPath();
-    lG.moveTo(p.x, p.y);
-    lG.arc(p.x, p.y, beamLength, a1, a2, false);
-    lG.closePath();
-    lG.fillPath();
+    // 2. Flashlight or Lantern beam cutting through darkness
+    if (p.flashlight.enabled && p.flashlight.battery > 0) {
+      const beamLength = p.flashlight.range;
+      const halfCone = p.flashlight.coneAngle * 0.5;
+      const a1 = p.facingAngle - halfCone;
+      const a2 = p.facingAngle + halfCone;
 
-    // Inner focused beam core
-    lG.fillStyle(0xfef3c7, 0.06);
-    lG.beginPath();
-    lG.moveTo(p.x, p.y);
-    lG.arc(p.x, p.y, beamLength * 0.65, p.facingAngle - 0.28, p.facingAngle + 0.28, false);
-    lG.closePath();
-    lG.fillPath();
+      // Outer warm tungsten cone
+      lG.fillStyle(0xfde68a, 0.28);
+      lG.beginPath();
+      lG.moveTo(p.x, p.y);
+      lG.arc(p.x, p.y, beamLength, a1, a2, false);
+      lG.closePath();
+      lG.fillPath();
 
-    // Close 360-degree survivor lantern aura
-    lG.fillStyle(0xd9822b, 0.05);
-    lG.fillCircle(p.x, p.y, 95);
+      // Focused inner high-intensity core
+      lG.fillStyle(0xfffbeb, 0.35);
+      lG.beginPath();
+      lG.moveTo(p.x, p.y);
+      lG.arc(
+        p.x,
+        p.y,
+        beamLength * 0.75,
+        p.facingAngle - halfCone * 0.55,
+        p.facingAngle + halfCone * 0.55,
+        false
+      );
+      lG.closePath();
+      lG.fillPath();
 
-    // Warm emergency light at Extraction Gate
-    lG.fillStyle(0x52b788, 0.07);
-    lG.fillCircle(w.extractionZone.x, w.extractionZone.y, w.extractionZone.radius * 1.45);
+      // Center bright needle
+      lG.fillStyle(0xffffff, 0.25);
+      lG.beginPath();
+      lG.moveTo(p.x, p.y);
+      lG.arc(p.x, p.y, beamLength * 0.45, p.facingAngle - 0.15, p.facingAngle + 0.15, false);
+      lG.closePath();
+      lG.fillPath();
+
+      // Close 360-degree survivor body lantern illumination
+      lG.fillStyle(0xfbbf24, 0.2);
+      lG.fillCircle(p.x, p.y, 75);
+    } else {
+      // When flashlight is off / dead: pitch-black claustrophobic survival aura
+      lG.fillStyle(0xd97706, 0.08);
+      lG.fillCircle(p.x, p.y, 45);
+    }
+
+    // 3. Extraction Gate emergency flare & guide light
+    const pulse = 0.5 + 0.5 * Math.sin(w.elapsedTime * 3.5);
+    lG.fillStyle(0x10b981, 0.18 + pulse * 0.12);
+    lG.fillCircle(w.extractionZone.x, w.extractionZone.y, w.extractionZone.radius * 1.5);
   }
 }

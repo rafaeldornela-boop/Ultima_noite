@@ -6,6 +6,7 @@ import {
 } from './action/actionRules.ts';
 import type {
   ActionWorldState,
+  DistrictId,
   PersistentShelterStash,
 } from './action/actionTypes.ts';
 import { PhaserArena } from './components/PhaserArena.tsx';
@@ -80,9 +81,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const startNewRun = useCallback(() => {
+  const startNewRun = useCallback((districtId: DistrictId = 'vila_esperanca') => {
     soundFX.playClick();
-    const freshWorld = createInitialWorldState();
+    const freshWorld = createInitialWorldState(undefined, districtId);
     worldStateRef.current = freshWorld;
     setEndSnapshot(null);
     setRunKey((prev) => prev + 1);
@@ -256,7 +257,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                onClick={startNewRun}
+                onClick={() => startNewRun()}
                 className="min-h-[46px] w-full rounded-sm bg-[#241a17] hover:bg-[#30221e] text-[#ebe5dc] border border-[#422f29] text-xs font-bold uppercase tracking-wider"
               >
                 Reiniciar Incursão
@@ -384,7 +385,7 @@ export default function App() {
               <button
                 type="button"
                 data-start="true"
-                onClick={startNewRun}
+                onClick={() => startNewRun()}
                 className="min-h-[46px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-base font-bold uppercase tracking-wider"
               >
                 {isVictory ? 'Nova Incursão' : 'Tentar Novamente'}
