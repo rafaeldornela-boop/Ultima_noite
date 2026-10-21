@@ -1,6 +1,7 @@
 import {
   ACTION_STASH_SCHEMA_VERSION,
   type ActionLootBag,
+  type DistrictId,
   type PersistentShelterStash,
   type ShelterSurvivor,
   type ShelterUpgradeState,
@@ -87,6 +88,70 @@ export function validateActionStash(raw: unknown): PersistentShelterStash | null
       ? candidate.activeSurvivorId
       : survivors.find((s) => s.status !== 'morto')?.id ?? 'surv_elena';
 
+  const validDistrictIds: DistrictId[] = ['vila_esperanca', 'centro_comercial', 'complexo_medico'];
+  const discoveredDistricts: DistrictId[] = Array.isArray(candidate.discoveredDistricts)
+    ? Array.from(
+        new Set<DistrictId>([
+          'vila_esperanca',
+          ...candidate.discoveredDistricts.filter((id): id is DistrictId =>
+            validDistrictIds.includes(id as DistrictId)
+          ),
+        ])
+      )
+    : initial.discoveredDistricts ?? ['vila_esperanca'];
+
+  const completedObjectiveIds = Array.isArray(candidate.completedObjectiveIds)
+    ? candidate.completedObjectiveIds.filter((id): id is string => typeof id === 'string')
+    : [];
+
+  const discoveredIntelIds = Array.isArray(candidate.discoveredIntelIds)
+    ? candidate.discoveredIntelIds.filter((id): id is string => typeof id === 'string')
+    : [];
+
+  let normalizedSummary: PersistentShelterStash['lastRunSummary'] = null;
+  if (candidate.lastRunSummary && typeof candidate.lastRunSummary === 'object') {
+    const rawSum = candidate.lastRunSummary as Record<string, unknown>;
+    const lootGained = sanitizeLootBag(rawSum.lootGained, {
+      comida: 0,
+      medicamentos: 0,
+      municao: 0,
+      materiais: 0,
+    });
+    const lootLost = sanitizeLootBag(rawSum.lootLost, {
+      comida: 0,
+      medicamentos: 0,
+      municao: 0,
+      materiais: 0,
+    });
+    const lootCollected = sanitizeLootBag(rawSum.lootCollected, lootGained);
+    normalizedSummary = {
+      outcome: rawSum.outcome === 'dead' ? 'dead' : 'extracted',
+      districtId: validDistrictIds.includes(rawSum.districtId as DistrictId)
+        ? (rawSum.districtId as DistrictId)
+        : 'vila_esperanca',
+      districtName:
+        typeof rawSum.districtName === 'string' ? rawSum.districtName : 'Vila Esperança',
+      lootCollected,
+      lootGained,
+      lootLost,
+      zombiesKilled:
+        typeof rawSum.zombiesKilled === 'number' ? Math.max(0, Math.floor(rawSum.zombiesKilled)) : 0,
+      durationSeconds:
+        typeof rawSum.durationSeconds === 'number'
+          ? Math.max(0, Math.floor(rawSum.durationSeconds))
+          : 0,
+      objectivesCompleted:
+        typeof rawSum.objectivesCompleted === 'number'
+          ? Math.max(0, Math.floor(rawSum.objectivesCompleted))
+          : 0,
+      visitedDistricts: Array.isArray(rawSum.visitedDistricts)
+        ? rawSum.visitedDistricts.filter((id): id is DistrictId =>
+            validDistrictIds.includes(id as DistrictId)
+          )
+        : undefined,
+    };
+  }
+
   const result: PersistentShelterStash = {
     schemaVersion: ACTION_STASH_SCHEMA_VERSION,
     totalStash,
@@ -109,10 +174,7 @@ export function validateActionStash(raw: unknown): PersistentShelterStash | null
     extractedRunIds: Array.isArray(candidate.extractedRunIds)
       ? candidate.extractedRunIds.filter((id): id is string => typeof id === 'string')
       : [],
-    lastRunSummary:
-      candidate.lastRunSummary && typeof candidate.lastRunSummary === 'object'
-        ? (candidate.lastRunSummary as PersistentShelterStash['lastRunSummary'])
-        : null,
+    lastRunSummary: normalizedSummary,
     updatedAt:
       typeof candidate.updatedAt === 'string'
         ? candidate.updatedAt
@@ -129,6 +191,9 @@ export function validateActionStash(raw: unknown): PersistentShelterStash | null
     shelterLog: Array.isArray(candidate.shelterLog)
       ? candidate.shelterLog.filter((item): item is string => typeof item === 'string').slice(0, 14)
       : initial.shelterLog,
+    discoveredDistricts,
+    completedObjectiveIds,
+    discoveredIntelIds,
   };
 
   result.evacuationProgress = result.evacuationCompleted

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   applyExtractionToStash,
+  calculateDeathLootPenalty,
   createInitialPersistentStash,
   createInitialWorldState,
 } from './action/actionRules.ts';
@@ -190,7 +191,7 @@ export default function App() {
                   id="pause-modal-title"
                   className="font-display text-xl sm:text-2xl font-bold text-[#ebe5dc] uppercase leading-tight"
                 >
-                  Setor Vila Esperança
+                  {worldStateRef.current.districtName || 'Setor Vila Esperança'}
                 </h2>
               </div>
             </div>
@@ -283,133 +284,177 @@ export default function App() {
         </div>
       )}
 
-      {/* OUTCOME MODAL: EXTRACTION VICTORY OR COMBAT DEFEAT */}
-      {shellState === 'gameover' && endSnapshot && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="outcome-modal-title"
-          className="fixed inset-0 z-50 bg-black/88 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
-        >
+      {/* OUTCOME MODAL: EXTRACTION VICTORY OR COMBAT DEFEAT WITH 50% RECOVERY */}
+      {shellState === 'gameover' && endSnapshot && (() => {
+        const deathPenalty = calculateDeathLootPenalty(endSnapshot.runLoot);
+        const completedObjectivesCount = (endSnapshot.objectives ?? []).filter((o) => o.completed).length;
+        const visitedSectorsCount = (endSnapshot.visitedDistricts ?? [endSnapshot.districtId]).length;
+
+        return (
           <div
-            className={`w-full max-w-md landscape:max-w-xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-sm p-4 sm:p-5 space-y-3.5 shadow-2xl border ${
-              isVictory
-                ? 'bg-[#121a15] border-[#3e6b4e]'
-                : 'bg-[#1a1110] border-[#8f241b]'
-            }`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="outcome-modal-title"
+            className="fixed inset-0 z-50 bg-black/88 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
           >
-            <div className="space-y-1 border-b border-[#26201b] pb-2.5">
-              <p
-                className={`text-[10px] font-bold uppercase tracking-widest ${
-                  isVictory ? 'text-[#52b788]' : 'text-[#c94a38]'
-                }`}
-              >
-                {isVictory
-                  ? 'Extração Concluída · Suprimentos Salvos'
-                  : 'Baixa em Combate · Saque Perdido'}
-              </p>
-              <h2
-                id="outcome-modal-title"
-                className="font-display text-xl sm:text-2xl font-bold text-[#ebe5dc] uppercase leading-tight"
-              >
-                {isVictory
-                  ? 'Portão do Abrigo Alcançado'
-                  : 'Sobrevivente Abatido na Zona Urbana'}
-              </h2>
-              <p className="text-[11px] text-[#b8afa4] leading-relaxed">
-                {isVictory
-                  ? 'Os recursos coletados na mochila foram transferidos uma única vez para o inventário permanente do abrigo.'
-                  : 'Sem retorno ao Portão de Extração, os suprimentos coletados nesta incursão permaneceram na zona infectada.'}
-              </p>
-            </div>
+            <div
+              className={`w-full max-w-md landscape:max-w-xl max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-sm p-4 sm:p-5 space-y-3.5 shadow-2xl border ${
+                isVictory
+                  ? 'bg-[#121a15] border-[#3e6b4e]'
+                  : 'bg-[#1a1110] border-[#8f241b]'
+              }`}
+            >
+              <div className="space-y-1 border-b border-[#26201b] pb-2.5">
+                <p
+                  className={`text-[10px] font-bold uppercase tracking-widest ${
+                    isVictory ? 'text-[#52b788]' : 'text-[#c94a38]'
+                  }`}
+                >
+                  {isVictory
+                    ? 'Extração Concluída · Suprimentos Salvos'
+                    : 'Baixa na Cidade · Penalidade Parcial (50%)'}
+                </p>
+                <h2
+                  id="outcome-modal-title"
+                  className="font-display text-xl sm:text-2xl font-bold text-[#ebe5dc] uppercase leading-tight"
+                >
+                  {isVictory
+                    ? `Rota de Extração Concluída (${endSnapshot.districtName})`
+                    : `Abatido em ${endSnapshot.districtName}`}
+                </h2>
+                <p className="text-[11px] text-[#b8afa4] leading-relaxed">
+                  {isVictory
+                    ? 'Você alcançou o ponto de extração com vida. Todo o saque temporário da mochila foi salvo no estoque permanente da Zona Segura.'
+                    : 'Você caiu antes da extração: 50% do saque temporário coletado nesta incursão foi perdido na queda e 50% foi recuperado para a Zona Segura. Seu estoque permanente anterior foi integralmente preservado.'}
+                </p>
+              </div>
 
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
-                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Abates</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#ebe5dc]">
-                  {endSnapshot.zombiesKilled}
+              <div className="grid grid-cols-4 gap-2 text-center">
+                <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                  <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Abates</div>
+                  <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#ebe5dc]">
+                    {endSnapshot.zombiesKilled}
+                  </div>
+                </div>
+                <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                  <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Setores</div>
+                  <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#38bdf8]">
+                    {visitedSectorsCount}/3
+                  </div>
+                </div>
+                <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                  <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Objetivos</div>
+                  <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#c87a28]">
+                    {completedObjectivesCount}
+                  </div>
+                </div>
+                <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
+                  <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
+                  <div className="font-mono-tabular text-base sm:text-lg font-bold text-[#52b788]">
+                    {stash.runsExtracted}
+                  </div>
                 </div>
               </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
-                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Duração</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#c87a28]">
-                  {Math.max(1, Math.round(endSnapshot.elapsedTime))}s
-                </div>
-              </div>
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-2">
-                <div className="text-[9px] uppercase tracking-wider text-[#8c8277]">Extrações</div>
-                <div className="font-mono-tabular text-lg font-bold text-[#52b788]">
-                  {stash.runsExtracted}
-                </div>
-              </div>
-            </div>
 
-            <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2">
-              <div className="text-[10px] font-bold uppercase tracking-wider text-[#c87a28]">
-                {isVictory
-                  ? 'Saque Extraído (e Total no Abrigo):'
-                  : 'Estoque Preservado no Abrigo:'}
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-xs font-mono-tabular">
-                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
-                    <ResourceIconSvg type="comida" className="w-3.5 h-3.5 shrink-0" />
-                    Rações
-                  </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
-                    {isVictory ? `+${endSnapshot.runLoot.comida} ` : ''}({stash.totalStash.comida})
-                  </span>
+              {isVictory ? (
+                <div
+                  data-testid="outcome-loot-summary"
+                  className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2"
+                >
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-[#52b788]">
+                    Saque Extraído (e Estoque Final na Zona Segura):
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-xs font-mono-tabular">
+                    {(
+                      [
+                        { key: 'comida', label: 'Comida' },
+                        { key: 'medicamentos', label: 'Remédios' },
+                        { key: 'municao', label: 'Munição' },
+                        { key: 'materiais', label: 'Materiais' },
+                      ] as const
+                    ).map((item) => (
+                      <div
+                        key={item.key}
+                        className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]"
+                      >
+                        <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
+                          <ResourceIconSvg type={item.key} className="w-3.5 h-3.5 shrink-0" />
+                          {item.label}
+                        </span>
+                        <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
+                          +{endSnapshot.runLoot[item.key]} ({stash.totalStash[item.key]})
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
-                    <ResourceIconSvg type="medicamentos" className="w-3.5 h-3.5 shrink-0" />
-                    Remédios
-                  </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
-                    {isVictory ? `+${endSnapshot.runLoot.medicamentos} ` : ''}({stash.totalStash.medicamentos})
-                  </span>
+              ) : (
+                <div
+                  data-testid="outcome-death-penalty-breakdown"
+                  className="rounded-sm bg-[#0c0a09] border border-[#241f1b] p-3 space-y-2"
+                >
+                  <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider">
+                    <span className="text-[#c94a38]">Balanço da Queda (Perda 50% · Recuperação 50%)</span>
+                    <span className="text-[#8c8277]">Estoque Permanente Preservado</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-[11px] font-mono-tabular">
+                    {(
+                      [
+                        { key: 'comida', label: 'Comida' },
+                        { key: 'medicamentos', label: 'Remédios' },
+                        { key: 'municao', label: 'Munição' },
+                        { key: 'materiais', label: 'Materiais' },
+                      ] as const
+                    ).map((item) => (
+                      <div
+                        key={item.key}
+                        data-testid={`penalty-row-${item.key}`}
+                        className="flex items-center justify-between gap-2 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]"
+                      >
+                        <span className="inline-flex items-center gap-1.5 text-[#d6cec2] font-sans font-semibold">
+                          <ResourceIconSvg type={item.key} className="w-3.5 h-3.5 shrink-0" />
+                          {item.label}
+                        </span>
+                        <div className="flex items-center gap-2 text-[10px]">
+                          <span className="text-[#ef4444]" title="Perdido na incursão">
+                            -{deathPenalty.lost[item.key]} perd.
+                          </span>
+                          <span className="text-[#52b788]" title="Recuperado para a Zona Segura">
+                            +{deathPenalty.recovered[item.key]} rec.
+                          </span>
+                          <span className="font-bold text-[#ebe5dc]" title="Estoque Permanente Final">
+                            Total: {stash.totalStash[item.key]}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
-                    <ResourceIconSvg type="municao" className="w-3.5 h-3.5 shrink-0" />
-                    Munição
-                  </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
-                    {isVictory ? `+${endSnapshot.runLoot.municao} ` : ''}({stash.totalStash.municao})
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-1.5 bg-[#14110f] px-2.5 py-1.5 rounded-sm border border-[#211c18]">
-                  <span className="inline-flex items-center gap-1 text-[#b8afa4] text-[11px]">
-                    <ResourceIconSvg type="materiais" className="w-3.5 h-3.5 shrink-0" />
-                    Sucata
-                  </span>
-                  <span className="font-bold text-[#ebe5dc] whitespace-nowrap text-[11px]">
-                    {isVictory ? `+${endSnapshot.runLoot.materiais} ` : ''}({stash.totalStash.materiais})
-                  </span>
-                </div>
-              </div>
-            </div>
+              )}
 
-            <div className="flex flex-col landscape:flex-row sm:flex-row gap-2">
-              <button
-                type="button"
-                data-start="true"
-                onClick={() => startNewRun()}
-                className="min-h-[44px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-sm sm:text-base font-bold uppercase tracking-wider"
-              >
-                {isVictory ? 'Nova Incursão' : 'Tentar Novamente'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShellState('title')}
-                className="min-h-[44px] px-5 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#d6cec2] border border-[#2e2722] text-xs font-bold uppercase tracking-wider"
-              >
-                Menu do Abrigo
-              </button>
+              <div className="flex flex-col landscape:flex-row sm:flex-row gap-2">
+                <button
+                  type="button"
+                  data-start="true"
+                  data-testid="outcome-retry-btn"
+                  onClick={() => startNewRun(endSnapshot.districtId)}
+                  className="min-h-[44px] flex-1 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] text-[#ebe5dc] font-display text-sm sm:text-base font-bold uppercase tracking-wider"
+                >
+                  {isVictory ? 'Nova Incursão' : 'Tentar Novamente'}
+                </button>
+                <button
+                  type="button"
+                  data-testid="outcome-return-hub-btn"
+                  onClick={() => setShellState('title')}
+                  className="min-h-[44px] px-5 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#d6cec2] border border-[#2e2722] text-xs font-bold uppercase tracking-wider"
+                >
+                  Zona Segura (Mapa & Equipamento)
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

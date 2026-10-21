@@ -3,6 +3,7 @@ import {
   applyDamageToPlayer,
   applyExtractionToStash,
   buildMinimapSnapshot,
+  calculateDeathLootPenalty,
   computeEvacuationProgress,
   computeTacticalCameraView,
   createDefaultInputState,
@@ -17,6 +18,7 @@ import {
   startReload,
   stepWorld,
   toggleFlashlight,
+  transitionToDistrict,
   triggerInteract,
   tryDirectObjectInteractAtWorldPoint,
   upgradeShelterStation,
@@ -200,19 +202,21 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(duplicateStash.totalStash.comida).toBe(initialFood + gainedFood);
     expect(duplicateStash.runsExtracted).toBe(1);
 
-    // Verify dead run does NOT grant unextracted loot
+    // Verify dead run applies 50% partial penalty and recovers the remaining 50% into permanent stash
     const deadWorld = createInitialWorldState('run_dead_loss');
-    deadWorld.runLoot.comida = 99;
+    deadWorld.runLoot.comida = 10;
     deadWorld.status = 'dead';
     const afterDeadStash = applyExtractionToStash(duplicateStash, deadWorld);
-    expect(afterDeadStash.totalStash.comida).toBe(initialFood + gainedFood);
+    expect(afterDeadStash.totalStash.comida).toBe(initialFood + gainedFood + 5);
+    expect(afterDeadStash.lastRunSummary?.lootLost?.comida).toBe(5);
+    expect(afterDeadStash.lastRunSummary?.lootGained.comida).toBe(5);
     expect(afterDeadStash.runsDied).toBe(1);
 
     // Verify storage save, load & reset
     const adapter = createMemoryStorageAdapter();
     await saveActionStash(afterDeadStash, adapter);
     const loaded = await loadActionStash(adapter);
-    expect(loaded.totalStash.comida).toBe(initialFood + gainedFood);
+    expect(loaded.totalStash.comida).toBe(initialFood + gainedFood + 5);
     expect(loaded.runsExtracted).toBe(1);
     expect(loaded.runsDied).toBe(1);
 
@@ -351,10 +355,12 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     for (const distId of ['vila_esperanca', 'centro_comercial', 'complexo_medico'] as const) {
       const w = createInitialWorldState(`spec_z_${distId}`, distId);
       expect(w.zombies.length).toBeGreaterThan(0);
-      expect(w.zombies.every((z) => z.archetype === 'lento')).toBe(true);
-      expect(w.zombies.every((z) => z.speed === 37)).toBe(true);
+      // All zombies should match their archetype configuration
       expect(
-        w.zombies.every((z) => z.turnRateRad === ZOMBIE_ARCHETYPE_CONFIG.lento.turnRateRad)
+        w.zombies.every((z) => {
+          const cfg = ZOMBIE_ARCHETYPE_CONFIG[z.archetype];
+          return z.speed === cfg.speed && z.turnRateRad === cfg.turnRateRad;
+        })
       ).toBe(true);
     }
   });
@@ -709,6 +715,61 @@ describe('Último Dia — Protótipo Top-Down Action Survival', () => {
     expect(port412.isLandscape).toBe(false);
     expect(port412.visibleWorldWidth).toBeGreaterThanOrEqual(495);
     expect(port412.visibleWorldHeight).toBeGreaterThan(port412.visibleWorldWidth);
+  });
+
+  it('22. Conecta os 3 distritos da cidade em tempo real preservando recursos, contêineres saqueados, objetivos e inteligência ambiental', () => {
+    const world = createInitialWorldState('spec_connected_city', 'vila_esperanca');
+    expect(world.connections?.length).toBeGreaterThanOrEqual(1);
+
+    // Saqueia armário da Residência Santos na Vila Esperança
+    const armarioSpot = world.lootSpots.find((s) => s.id === 'loot_cs_armario')!;
+    world.player.x = armarioSpot.x;
+    world.player.y = armarioSpot.y;
+    const lootRes = triggerInteract(world);
+    expect(lootRes.action).toBe('looted');
+    expect(world.discoveredIntelIds).toContain('intel_diario_vila');
+    expect(world.objectives?.find((o) => o.id === 'obj_suprimentos_vila')?.completed).toBe(true);
+
+    // Mata um zumbi na Vila Esperança
+    world.zombies[0].dead = true;
+    world.zombies[0].hp = 0;
+
+    // Caminha até a passagem leste para o Centro Comercial (travessia na borda da rua)
+    const eastConn = world.connections!.find((c) => c.toDistrict === 'centro_comercial')!;
+    world.player.x = eastConn.x;
+    world.player.y = eastConn.y;
+    const transitRes = triggerInteract(world);
+    expect(transitRes.action).toBe('transitioned');
+
+    expect(world.districtId).toBe('centro_comercial');
+    expect(world.visitedDistricts).toContain('vila_esperanca');
+    expect(world.visitedDistricts).toContain('centro_comercial');
+
+    // Avança para o Complexo Médico pela passagem norte do Centro Comercial
+    const northConn = world.connections!.find((c) => c.toDistrict === 'complexo_medico')!;
+    world.player.x = northConn.x;
+    world.player.y = northConn.y;
+    const medTransit = triggerInteract(world);
+    expect(medTransit.action).toBe('transitioned');
+    expect(world.districtId).toBe('complexo_medico');
+    expect(world.visitedDistricts).toContain('complexo_medico');
+
+    // Retorna para a Vila Esperança e confirma que contêineres e inimigos não foram reiniciados
+    const backOk = transitionToDistrict(world, 'vila_esperanca');
+    expect(backOk).toBe(true);
+    expect(world.districtId).toBe('vila_esperanca');
+    expect(world.lootSpots.find((s) => s.id === 'loot_cs_armario')?.looted).toBe(true);
+    expect(world.zombies[0].dead).toBe(true);
+
+    // Verifica cálculo centralizado de penalidade de morte (50%)
+    const penalty = calculateDeathLootPenalty({
+      comida: 7,
+      medicamentos: 4,
+      municao: 9,
+      materiais: 0,
+    });
+    expect(penalty.recovered).toEqual({ comida: 3, medicamentos: 2, municao: 4, materiais: 0 });
+    expect(penalty.lost).toEqual({ comida: 4, medicamentos: 2, municao: 5, materiais: 0 });
   });
 });
 

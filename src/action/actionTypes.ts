@@ -93,6 +93,8 @@ export interface LootSpot {
   looted: boolean;
   searchState?: LootSearchState;
   isVisibleToPlayer?: boolean;
+  isHighValue?: boolean;
+  clueText?: string;
   contents: Partial<ActionLootBag>;
 }
 
@@ -102,6 +104,54 @@ export interface ExtractionZone {
   x: number;
   y: number;
   radius: number;
+}
+
+export interface DistrictConnection {
+  id: string;
+  fromDistrict: DistrictId;
+  toDistrict: DistrictId;
+  toDistrictName: string;
+  label: string;
+  direction: 'east' | 'west' | 'north' | 'south';
+  x: number;
+  y: number;
+  radius: number;
+  corridorRect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  arrivalX: number;
+  arrivalY: number;
+  arrivalFacingAngle: number;
+}
+
+export interface DistrictRuntimeState {
+  districtId: DistrictId;
+  zombies: ZombieEntity[];
+  lootSpots: LootSpot[];
+  buildings: BuildingZone[];
+  nightReinforcementsSpawned?: number;
+}
+
+export interface IncursionObjective {
+  id: string;
+  title: string;
+  description: string;
+  districtId: DistrictId;
+  districtName: string;
+  targetSpotIds: string[];
+  completed: boolean;
+  intelId: string;
+  intelTitle: string;
+  intelSummary: string;
+}
+
+export interface DeathPenaltyBreakdown {
+  collected: ActionLootBag;
+  lost: ActionLootBag;
+  recovered: ActionLootBag;
 }
 
 export interface FlashlightState {
@@ -170,6 +220,12 @@ export interface ZombieEntity {
   alertState: 'idle' | 'patrol' | 'investigating' | 'hunting';
   alertTimer: number;
   targetPoint: { x: number; y: number } | null;
+  patrolOrigin?: { x: number; y: number };
+  patrolTarget?: { x: number; y: number } | null;
+  patrolPauseTimer?: number;
+  stuckTimer?: number;
+  avoidanceDir?: number;
+  searchLookPhase?: number;
   visibility?: VisibilityLevel;
   visibilityState?: VisibilityLevel;
   visibilityLevel?: VisibilityLevel;
@@ -231,11 +287,12 @@ export interface ActionInputState {
 }
 
 export interface InteractPrompt {
-  targetType: 'loot' | 'extraction';
+  targetType: 'loot' | 'extraction' | 'transition';
   id: string;
   label: string;
   actionVerb?: string;
   containerType?: ContainerType;
+  toDistrict?: DistrictId;
   x: number;
   y: number;
 }
@@ -293,6 +350,12 @@ export interface ActionWorldState {
   buildings: BuildingZone[];
   doors?: BuildingDoor[];
   nearbyDoor?: BuildingDoor | null;
+  connections: DistrictConnection[];
+  districtStates: Partial<Record<DistrictId, DistrictRuntimeState>>;
+  visitedDistricts: DistrictId[];
+  objectives: IncursionObjective[];
+  discoveredIntelIds: string[];
+  transitionCooldown: number;
   acousticCues: AcousticCue[];
   nightSpawnTimer?: number;
   nightReinforcementsSpawned?: number;
@@ -307,6 +370,14 @@ export interface ActionWorldState {
   extractionProcessed: boolean;
   activeLooting: ActiveLootingState | null;
   noiseEvents: NoiseEvent[];
+  impactEvents?: Array<{
+    id: string;
+    x: number;
+    y: number;
+    angle: number;
+    kind: 'wall' | 'car' | 'crate' | 'barrier' | 'flesh';
+    timer: number;
+  }>;
 }
 
 export interface RescuedSurvivorProfile {
@@ -339,6 +410,9 @@ export interface PersistentShelterStash {
   runsDied: number;
   totalZombiesKilled: number;
   extractedRunIds: string[];
+  discoveredDistricts?: DistrictId[];
+  completedObjectiveIds?: string[];
+  discoveredIntelIds?: string[];
   day?: number;
   survivors?: ShelterSurvivor[];
   activeSurvivorId?: string;
@@ -351,9 +425,15 @@ export interface PersistentShelterStash {
   evacuationCompleted?: boolean;
   lastRunSummary: {
     outcome: 'extracted' | 'dead';
+    districtId?: DistrictId;
+    districtName?: string;
+    lootCollected?: ActionLootBag;
     lootGained: ActionLootBag;
+    lootLost?: ActionLootBag;
     zombiesKilled: number;
     durationSeconds: number;
+    objectivesCompleted?: number;
+    visitedDistricts?: DistrictId[];
     rescuedSurvivorName?: string;
   } | null;
   updatedAt: string;
@@ -375,6 +455,14 @@ export interface MinimapMarkerProjection {
   y: number;
   looted?: boolean;
   archetype?: ZombieArchetype;
+}
+
+export interface MinimapConnectionProjection {
+  id: string;
+  x: number;
+  y: number;
+  direction: 'east' | 'west' | 'north' | 'south';
+  label: string;
 }
 
 export interface MinimapSnapshot {
@@ -406,5 +494,7 @@ export interface MinimapSnapshot {
   buildings: MinimapBuildingProjection[];
   lootSpots: MinimapMarkerProjection[];
   zombies: MinimapMarkerProjection[];
+  connections?: MinimapConnectionProjection[];
 }
+
 

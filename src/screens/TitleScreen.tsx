@@ -1,13 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
-  CAMPAIGN_EVACUATION_GOAL,
-  createInitialUpgrades,
-  executeEvacuation,
-  getShelterUpgradeCost,
-  healShelterSurvivor,
-  selectActiveSurvivor,
+  CITY_OBJECTIVES_CATALOG,
+  DEFAULT_MAX_CARRY_CAPACITY,
+  purchaseShelterUpgrade,
   SHELTER_UPGRADE_CATALOG,
-  upgradeShelterStation,
 } from '../action/actionRules.ts';
 import type {
   DistrictId,
@@ -15,18 +11,17 @@ import type {
   ShelterUpgradeId,
 } from '../action/actionTypes.ts';
 import { DISTRICTS } from '../action/mapData.ts';
-import {
-  ResourceIconSvg,
-  TitleBackdropSvg,
-  TitleEmblemSvg,
-} from '../components/SvgArt.tsx';
+import { CityCinematicBackdropSvg, DistrictVisualCardArt } from '../components/CityArt.tsx';
+import { ResourceIconSvg, TitleEmblemSvg } from '../components/SvgArt.tsx';
 
 interface TitleScreenProps {
   stash: PersistentShelterStash;
   onStartGame: (districtId: DistrictId) => void;
   onResetStash: () => void;
-  onUpdateStash?: (nextStash: PersistentShelterStash) => void;
+  onUpdateStash: (nextStash: PersistentShelterStash) => void;
 }
+
+type ActiveModal = 'none' | 'gear' | 'objectives' | 'history';
 
 export function TitleScreen({
   stash,
@@ -34,469 +29,540 @@ export function TitleScreen({
   onResetStash,
   onUpdateStash,
 }: TitleScreenProps) {
-  const [confirmReset, setConfirmReset] = useState(false);
-  const [selectedDistrict, setSelectedDistrict] = useState<DistrictId>('vila_esperanca');
-  const [activeTab, setActiveTab] = useState<'operacao' | 'sobreviventes' | 'melhorias'>('operacao');
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [selectedDistrict, setSelectedDistrict] =
+    useState<DistrictId>('vila_esperanca');
+  const [activeModal, setActiveModal] = useState<ActiveModal>('none');
+  const [feedbackBanner, setFeedbackBanner] = useState<string | null>(null);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        onStartGame(selectedDistrict);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onStartGame, selectedDistrict]);
+  const selectedDef =
+    DISTRICTS.find((d) => d.id === selectedDistrict) ?? DISTRICTS[0];
 
-  const survivors = stash.survivors ?? [];
-  const upgradesMap = stash.upgrades ?? createInitialUpgrades();
-  const upgradeEntries = (Object.keys(SHELTER_UPGRADE_CATALOG) as ShelterUpgradeId[]).map((id) => ({
-    ...SHELTER_UPGRADE_CATALOG[id],
-    level: upgradesMap[id] ?? 0,
-  }));
-  const activeSurvivor =
-    survivors.find((s) => s.id === stash.activeSurvivorId && s.status !== 'morto') ||
-    survivors.find((s) => s.status !== 'morto');
-  const evacProgress = stash.evacuationProgress ?? 0;
+  const discoveredSet = new Set<DistrictId>(
+    stash.discoveredDistricts ?? ['vila_esperanca']
+  );
+  const completedObjSet = new Set<string>(stash.completedObjectiveIds ?? []);
+  const discoveredIntelIds = new Set<string>(stash.discoveredIntelIds ?? []);
 
-  const handleUpgrade = (upgradeId: ShelterUpgradeId) => {
-    if (!onUpdateStash) return;
-    const res = upgradeShelterStation(stash, upgradeId);
-    setStatusMessage(res.message);
+  // Calculate operator stats from field equipment upgrades
+  const workshopLvl = stash.upgrades?.oficina ?? 0;
+  const enfLvl = stash.upgrades?.enfermaria ?? 0;
+  const radioLvl = stash.upgrades?.torre_radio ?? 0;
+
+  const operatorMaxHp = 100 + enfLvl * 15;
+  const carryCapacity = DEFAULT_MAX_CARRY_CAPACITY + workshopLvl * 6;
+  const bonusReserveAmmo = workshopLvl * 4;
+  const flashlightBonusPx = radioLvl * 38;
+
+  const handleUpgradeGear = (upgradeId: ShelterUpgradeId) => {
+    const res = purchaseShelterUpgrade(stash, upgradeId);
+    setFeedbackBanner(res.message);
     if (res.ok) {
       onUpdateStash(res.stash);
     }
   };
 
-  const handleHealSurvivor = (survivorId: string) => {
-    if (!onUpdateStash) return;
-    const res = healShelterSurvivor(stash, survivorId);
-    setStatusMessage(res.message);
-    if (res.ok) {
-      onUpdateStash(res.stash);
-    }
-  };
-
-  const handleSelectSurvivor = (survivorId: string) => {
-    if (!onUpdateStash) return;
-    const nextStash = selectActiveSurvivor(stash, survivorId);
-    onUpdateStash(nextStash);
-    setStatusMessage('Operador selecionado para a próxima incursão.');
-  };
-
-  const handleEvacuate = () => {
-    if (!onUpdateStash) return;
-    const res = executeEvacuation(stash);
-    setStatusMessage(res.message);
-    if (res.ok) {
-      onUpdateStash(res.stash);
-    }
-  };
+  const discoveredIntelEntries = CITY_OBJECTIVES_CATALOG.filter(
+    (obj) => discoveredIntelIds.has(obj.intelId) || completedObjSet.has(obj.id)
+  );
 
   return (
-    <div className="relative min-h-dvh w-full overflow-y-auto bg-[#0e0c0a] flex flex-col justify-between safe-area-screen sm:px-5 sm:py-3 select-none">
-      {/* Atmospheric Post-Apocalyptic Key-Art Backdrop */}
-      <div className="fixed inset-0 pointer-events-none">
-        <TitleBackdropSvg />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#0e0c0a]/96 via-[#0e0c0a]/86 to-[#0e0c0a]/55" />
+    <main className="relative min-h-screen w-full bg-[#0a0807] text-[#ebe5dc] overflow-x-hidden flex flex-col justify-between select-none font-sans">
+      {/* High-Impact Cinematic City Backdrop */}
+      <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+        <div className="absolute inset-0 scale-110 blur-[1px] opacity-40">
+          <CityCinematicBackdropSvg />
+        </div>
+        <div className="absolute inset-0 bg-gradient-to-b from-[#0a0807]/95 via-[#0a0807]/40 to-[#0a0807]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(10,8,7,0.8)_100%)]" />
       </div>
 
-      {/* Responsive Landscape 2-Column / Portrait 1-Column Command Layout */}
-      <div className="relative z-10 w-full max-w-5xl mx-auto my-auto grid grid-cols-1 landscape:grid-cols-12 lg:grid-cols-12 gap-2.5 sm:gap-4 items-start">
-        {/* LEFT COLUMN (5 cols in landscape): Title Lockup, Shelter Stash & Primary CTA */}
-        <div className="landscape:col-span-5 lg:col-span-5 flex flex-col gap-2">
-          <div className="flex items-center gap-2.5">
-            <TitleEmblemSvg className="w-10 h-10 sm:w-12 sm:h-12 shrink-0" />
-            <div>
-              <p className="text-[9px] sm:text-[10px] font-bold tracking-[0.18em] uppercase text-[#c87a28]">
-                Sobrevivência Urbana Tática · Dia {stash.day ?? 1}
-              </p>
-              <h1 className="font-display text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight text-[#ebe5dc] uppercase leading-none mt-0.5">
-                Último Dia
-              </h1>
-              <p className="font-display text-xs sm:text-sm font-semibold tracking-[0.22em] text-[#9e2a22] uppercase mt-0.5">
-                Setor Vila Esperança
-              </p>
+      {/* Main Content Layout */}
+      <div className="relative z-10 max-w-7xl w-full mx-auto px-4 py-6 landscape:py-4 flex-1 flex flex-col gap-6">
+        
+        {/* HEADER: Identity Branding & Permanent Stash Strip */}
+        <header className="flex flex-col md:flex-row items-center justify-between gap-6 border-b border-white/5 pb-6">
+          <div className="flex flex-col items-center md:items-start gap-1">
+            <div className="flex items-center gap-3">
+              <TitleEmblemSvg className="w-12 h-12 sm:w-14 sm:h-14 drop-shadow-[0_0_20px_rgba(224,145,50,0.4)]" />
+              <div className="text-center md:text-left">
+                <p className="text-[10px] font-black uppercase tracking-[0.4em] text-[#e09132] opacity-80">
+                  Sobrevivência Urbana
+                </p>
+                <h1 className="font-display text-3xl sm:text-4xl font-black uppercase tracking-tighter text-white leading-none">
+                  Último Dia
+                </h1>
+              </div>
             </div>
           </div>
 
-          <p className="text-[11px] sm:text-xs text-[#b8afa4] leading-relaxed landscape:hidden lg:block">
-            Avance sob visibilidade tática restrita, escute ameaças ocultas na escuridão, gerencie os sobreviventes e expanda as estações do abrigo para preparar a evacuação final.
-          </p>
+          {/* Quick-Access Resources & Workbench */}
+          <div className="flex items-center gap-4">
+             <div className="flex items-center gap-3 bg-black/40 backdrop-blur-md border border-white/10 px-4 py-2 rounded-sm shadow-xl">
+               <div className="flex items-center gap-1.5" title="Comida">
+                 <ResourceIconSvg type="comida" className="w-4 h-4" />
+                 <span className="font-mono text-sm font-bold">{stash.totalStash.comida}</span>
+               </div>
+               <div className="flex items-center gap-1.5" title="Medicamentos">
+                 <ResourceIconSvg type="medicamentos" className="w-4 h-4" />
+                 <span className="font-mono text-sm font-bold">{stash.totalStash.medicamentos}</span>
+               </div>
+               <div className="flex items-center gap-1.5" title="Munição">
+                 <ResourceIconSvg type="municao" className="w-4 h-4" />
+                 <span className="font-mono text-sm font-bold">{stash.totalStash.municao}</span>
+               </div>
+               <div className="flex items-center gap-1.5" title="Materiais">
+                 <ResourceIconSvg type="materiais" className="w-4 h-4" />
+                 <span className="font-mono text-sm font-bold">{stash.totalStash.materiais}</span>
+               </div>
+             </div>
 
-          {/* Persistent Shelter Stash Readout + Evacuation Progress */}
-          <div
-            className="w-full rounded-sm bg-[#12100e]/95 border border-[#2e2722] p-2 sm:p-2.5 space-y-1.5 shadow-2xl"
-            aria-label="Estoque persistido no abrigo"
-          >
-            <div className="flex flex-wrap items-center justify-between gap-1 text-[9px] sm:text-[10px] border-b border-[#241f1b] pb-1">
-              <span className="font-bold uppercase tracking-widest text-[#c87a28]">
-                Inventário do Abrigo · Dia {stash.day ?? 1}
-              </span>
-              <span className="text-[#8c8277] font-mono-tabular">
-                Extrações: {stash.runsExtracted} · Baixas: {stash.runsDied} · Abates: {stash.totalZombiesKilled}
-              </span>
-            </div>
+             <button
+               type="button"
+               onClick={() => setActiveModal('gear')}
+               className="w-10 h-10 rounded-sm bg-[#e09132] text-black flex items-center justify-center shadow-lg hover:scale-105 active:scale-95 transition-all"
+               title="Oficina de Campo"
+             >
+               <span className="text-xl">🛠️</span>
+             </button>
+          </div>
+        </header>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 landscape:grid-cols-2 lg:grid-cols-4 gap-1.5">
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] px-2 py-1 flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <ResourceIconSvg type="comida" className="w-3.5 h-3.5 shrink-0" />
-                  <span className="text-[10px] sm:text-[11px] text-[#b8afa4]">Rações</span>
-                </div>
-                <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
-                  {stash.totalStash.comida}
-                </span>
-              </div>
+        {/* CENTERPIECE: Connected City Map with Visual District Cards */}
+        <section className="flex-1 flex flex-col justify-center gap-6">
+          <div className="text-center space-y-1">
+            <h2 className="text-sm font-black uppercase tracking-[0.3em] text-[#38bdf8]">
+              Mapa da Cidade
+            </h2>
+            <p className="text-xs text-[#8c8277] uppercase tracking-widest">
+              Selecione um distrito conectado para iniciar a incursão
+            </p>
+          </div>
 
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] px-2 py-1 flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <ResourceIconSvg type="medicamentos" className="w-3.5 h-3.5 shrink-0" />
-                  <span className="text-[10px] sm:text-[11px] text-[#b8afa4]">Remédios</span>
-                </div>
-                <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
-                  {stash.totalStash.medicamentos}
-                </span>
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-6xl mx-auto w-full">
+            {DISTRICTS.map((dist) => {
+              const active = dist.id === selectedDistrict;
+              const isDiscovered = discoveredSet.has(dist.id);
+              const threat = dist.id === 'vila_esperanca' ? 'BAIXA' : dist.id === 'centro_comercial' ? 'MÉDIA' : 'ALTA';
+              const threatColor = dist.id === 'vila_esperanca' ? 'text-green-500' : dist.id === 'centro_comercial' ? 'text-orange-500' : 'text-red-500';
 
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] px-2 py-1 flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <ResourceIconSvg type="municao" className="w-3.5 h-3.5 shrink-0" />
-                  <span className="text-[10px] sm:text-[11px] text-[#b8afa4]">Munição</span>
-                </div>
-                <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
-                  {stash.totalStash.municao}
-                </span>
-              </div>
-
-              <div className="rounded-sm bg-[#0c0a09] border border-[#241f1b] px-2 py-1 flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <ResourceIconSvg type="materiais" className="w-3.5 h-3.5 shrink-0" />
-                  <span className="text-[10px] sm:text-[11px] text-[#b8afa4]">Sucata</span>
-                </div>
-                <span className="font-mono-tabular text-xs font-bold text-[#ebe5dc]">
-                  {stash.totalStash.materiais}
-                </span>
-              </div>
-            </div>
-
-            {/* Campaign Evacuation Goal Bar */}
-            <div className="pt-1 border-t border-[#241f1b] space-y-1">
-              <div className="flex items-center justify-between text-[9px] sm:text-[10px]">
-                <span className="font-bold uppercase tracking-wider text-[#52b788] truncate pr-2">
-                  {stash.evacuationCompleted
-                    ? '✅ Evacuação Concluída — Resgate Aéreo Realizado'
-                    : `Plano de Evacuação (Rádio Nv.${CAMPAIGN_EVACUATION_GOAL.radioLevelRequired} + Suprimentos)`}
-                </span>
-                <span className="font-mono-tabular font-bold text-[#ebe5dc] shrink-0">
-                  {evacProgress}%
-                </span>
-              </div>
-              <div className="h-1.5 w-full bg-[#090807] border border-[#1f1a17] overflow-hidden">
-                <div
-                  className="h-full bg-[#52b788] transition-all duration-150"
-                  style={{ width: `${Math.min(100, evacProgress)}%` }}
-                />
-              </div>
-              {evacProgress >= 80 && !stash.evacuationCompleted && (
+              return (
                 <button
-                  type="button"
-                  data-testid="shelter-evacuate-btn"
-                  onClick={handleEvacuate}
-                  className="mt-1 w-full py-1.5 px-3 rounded-sm bg-[#193326] hover:bg-[#224634] border border-[#52b788] text-[#ebe5dc] text-[11px] font-bold uppercase tracking-wider"
+                  key={dist.id}
+                  onClick={() => setSelectedDistrict(dist.id)}
+                  className={`group relative aspect-[4/3] rounded-sm overflow-hidden border-2 transition-all ${
+                    active ? 'border-[#e09132] shadow-[0_0_30px_rgba(224,145,50,0.3)] scale-105 z-10' : 'border-white/5 opacity-70 grayscale-[0.5] hover:opacity-100 hover:grayscale-0'
+                  }`}
                 >
-                  🚁 Acionar Evacuação Final do Abrigo
+                  <DistrictVisualCardArt districtId={dist.id} className="w-full h-full object-cover" />
+                  <div className={`absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent ${active ? 'opacity-90' : 'opacity-70'}`} />
+                  
+                  <div className="absolute inset-x-0 bottom-0 p-4 text-left">
+                    <div className="flex items-center justify-between mb-1">
+                       <span className={`text-[10px] font-black tracking-widest ${threatColor}`}>AMEAÇA {threat}</span>
+                       {!isDiscovered && <span className="bg-[#e09132] text-black text-[9px] font-black px-1.5 py-0.5 rounded-xs">NOVO</span>}
+                    </div>
+                    <h3 className="font-display text-lg font-black uppercase text-white group-hover:text-[#e09132] transition-colors">
+                      {dist.name}
+                    </h3>
+                    <p className="text-[10px] text-[#a8a29e] line-clamp-1 opacity-80">
+                      {dist.tagline}
+                    </p>
+                  </div>
+
+                  {active && (
+                    <div className="absolute top-3 right-3 w-3 h-3 rounded-full bg-[#e09132] animate-ping" />
+                  )}
                 </button>
-              )}
+              );
+            })}
+
+            {/* Locked Sector */}
+            <div className="relative aspect-[4/3] rounded-sm overflow-hidden border-2 border-white/5 bg-black/80 opacity-40">
+              <DistrictVisualCardArt districtId="zona_industrial" isLocked={true} className="w-full h-full object-cover grayscale" />
+              <div className="absolute inset-0 flex items-center justify-center flex-col gap-2">
+                <span className="text-2xl">🔒</span>
+                <span className="text-[10px] font-black tracking-[0.2em] text-white/40">ZONA INDUSTRIAL</span>
+              </div>
             </div>
           </div>
+        </section>
 
-          {/* Primary & Secondary CTAs (Utilitarian Tactical Buttons) */}
-          <div className="w-full flex flex-row items-center gap-2">
-            <button
-              type="button"
-              data-start="true"
-              data-testid="start-incursion-btn"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                onStartGame(selectedDistrict);
-              }}
-              className="min-h-[40px] sm:min-h-[42px] flex-1 px-4 py-2 rounded-sm bg-[#8f241b] hover:bg-[#a82c21] border border-[#b93829] active:scale-[0.99] text-[#f5f0e6] font-display text-sm sm:text-base font-bold tracking-[0.14em] uppercase transition-colors shadow-lg shadow-black/60 whitespace-nowrap"
+        {/* PRIMARY CALL-TO-ACTION */}
+        <footer className="mt-auto pt-6 flex flex-col items-center gap-4">
+           <div className="flex items-center gap-8 text-[10px] font-black uppercase tracking-widest text-[#8c8277]">
+             <div className="flex items-center gap-2">
+               <span className="text-[#52b788]">♥</span> {operatorMaxHp} PV
+             </div>
+             <div className="flex items-center gap-2">
+               <span className="text-[#e09132]">🎒</span> {carryCapacity} ITENS
+             </div>
+             <div className="flex items-center gap-2">
+               <span className="text-[#38bdf8]">🔫</span> 12/{18 + bonusReserveAmmo} AMMO
+             </div>
+           </div>
+
+           <button
+             type="button"
+             data-testid="start-incursion-btn"
+             onClick={() => onStartGame(selectedDistrict)}
+             className="relative group w-full max-w-2xl overflow-hidden rounded-sm bg-[#99261a] hover:bg-[#b32e20] transition-all duration-300 shadow-[0_10px_40px_-10px_rgba(153,38,26,0.5)] border border-white/10"
+           >
+             <div className="relative z-10 py-5 flex items-center justify-center gap-4 cursor-pointer">
+                <span className="text-2xl group-hover:rotate-12 transition-transform">⚠️</span>
+                <span className="font-display text-xl sm:text-2xl font-black uppercase tracking-[0.1em] text-white">
+                  Iniciar Incursão
+                </span>
+             </div>
+             <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/10 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+           </button>
+
+           <div className="flex items-center gap-6">
+             <button onClick={() => setActiveModal('objectives')} className="text-[10px] font-black uppercase tracking-widest text-[#38bdf8] hover:underline flex items-center gap-1.5">
+               📋 Missões ({completedObjSet.size}/4)
+             </button>
+             <button onClick={() => setActiveModal('history')} className="text-[10px] font-black uppercase tracking-widest text-[#52b788] hover:underline flex items-center gap-1.5">
+               📜 Histórico
+             </button>
+             {stash.runsStarted > 0 && (
+               <button onClick={onResetStash} className="text-[10px] font-black uppercase tracking-widest text-red-500/60 hover:text-red-500 hover:underline">
+                 Reiniciar Progresso
+               </button>
+             )}
+           </div>
+        </footer>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* MODAL 1: BANCADA DE EQUIPAMENTO (OPERATOR FIELD LOADOUT UPGRADES)          */}
+      {/* ========================================================================= */}
+      {activeModal === 'gear' && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+        >
+          <div
+            data-testid="operator-loadout-card"
+            className="w-full max-w-xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-sm bg-[#14100d] border border-[#3e2e22] p-4 sm:p-5 space-y-3.5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-[#292019] pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">🎒</span>
+                <div>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[#e09132]">
+                    Zona Segura · Oficina de Campo
+                  </span>
+                  <h2 className="font-display text-base sm:text-lg font-bold uppercase text-[#f5f1ea]">
+                    Equipamentos do Operador
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal('none')}
+                className="px-2.5 py-1 rounded-sm bg-[#221811] hover:bg-[#2e2017] border border-[#3d2a1d] text-xs font-bold text-[#e09132]"
+              >
+                Fechar ✕
+              </button>
+            </div>
+
+            {/* Operator Stat Badges */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Saúde Máxima</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#52b788]">
+                  {operatorMaxHp} PV
+                </div>
+              </div>
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Capacidade Mochila</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#e09132]">
+                  {carryCapacity} itens
+                </div>
+              </div>
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Munição 9mm</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#f5f1ea]">
+                  12/{18 + bonusReserveAmmo}
+                </div>
+              </div>
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Foco Lanterna</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#38bdf8]">
+                  {320 + flashlightBonusPx}px
+                </div>
+              </div>
+            </div>
+
+            {/* Workbench Upgrades Section */}
+            <div
+              data-testid="gear-workbench-drawer"
+              className="rounded-sm bg-[#0c0908] border border-[#2b211a] p-3 space-y-2.5"
             >
-              Iniciar Incursão
-            </button>
+              <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-[#e09132]">
+                <span>Melhorias com Recursos Salvos</span>
+                <span className="text-[#8c8277] font-mono-tabular">
+                  Mat: {stash.totalStash.materiais} · Rem: {stash.totalStash.medicamentos}
+                </span>
+              </div>
 
-            {!confirmReset ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setConfirmReset(true);
-                }}
-                className="min-h-[40px] sm:min-h-[42px] px-3 py-2 rounded-sm bg-[#161311] hover:bg-[#211c19] text-[#a89d91] border border-[#2e2722] text-[10px] sm:text-[11px] font-semibold uppercase tracking-wider transition-colors whitespace-nowrap"
-              >
-                Zerar Campanha
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.currentTarget.blur();
-                  setConfirmReset(false);
-                  onResetStash();
-                }}
-                className="min-h-[40px] sm:min-h-[42px] px-3 py-2 rounded-sm bg-[#5e1410] hover:bg-[#781a15] border border-[#9e2a22] text-white text-[10px] sm:text-[11px] font-bold uppercase tracking-wider transition-colors whitespace-nowrap"
-              >
-                Confirmar Exclusão
-              </button>
-            )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {(Object.keys(SHELTER_UPGRADE_CATALOG) as ShelterUpgradeId[]).map(
+                  (upId) => {
+                    const def = SHELTER_UPGRADE_CATALOG[upId];
+                    const lvl = stash.upgrades?.[upId] ?? 0;
+                    const isMax = lvl >= def.maxLevel;
+                    const nextCost = !isMax ? def.costs[lvl] : null;
+
+                    return (
+                      <div
+                        key={upId}
+                        className="p-2.5 rounded-sm bg-[#14100d] border border-[#261d16] flex flex-col justify-between gap-2"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between text-xs font-bold text-[#f5f1ea]">
+                            <span>{def.name}</span>
+                            <span className="font-mono-tabular text-[#e09132] text-[10px]">
+                              Nv. {lvl}/{def.maxLevel}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-[#9c9185] leading-tight mt-1">
+                            {def.effectSummary(lvl)}
+                          </p>
+                        </div>
+
+                        {isMax ? (
+                          <span className="text-[10px] font-bold uppercase text-[#52b788]">
+                            ✓ Nível Máximo
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleUpgradeGear(upId)}
+                            className="min-h-[32px] px-2.5 py-1 rounded-sm bg-[#22170f] hover:bg-[#302115] border border-[#e09132]/60 text-[10px] font-bold uppercase tracking-wider text-[#fef3c7]"
+                          >
+                            Aprimorar (
+                            {Object.entries(nextCost ?? {})
+                              .map(([k, v]) => `${v} ${k.slice(0, 3)}`)
+                              .join(', ')}
+                            )
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }
+                )}
+              </div>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* RIGHT COLUMN (7 cols in landscape): Shelter Management Tabs & Active Panel */}
-        <div className="landscape:col-span-7 lg:col-span-7 flex flex-col gap-2 w-full">
-          {/* Navigation Tabs: Setor de Operação | Equipe do Abrigo | Melhorias */}
-          <div className="w-full grid grid-cols-3 gap-1.5 border-b border-[#2b241e] pb-1.5">
-            <button
-              type="button"
-              data-testid="tab-operacao"
-              onClick={() => setActiveTab('operacao')}
-              className={`min-h-[36px] px-1.5 py-1.5 rounded-sm text-[10px] sm:text-[11px] font-bold uppercase tracking-wider border transition-colors text-center truncate ${
-                activeTab === 'operacao'
-                  ? 'bg-[#1e1713] border-[#e09132] text-[#e09132]'
-                  : 'bg-[#12100e] border-[#26201b] text-[#a89d91]'
-              }`}
-            >
-              1. Incursão ({activeSurvivor ? activeSurvivor.name.split(' ')[0] : 'Equipe'})
-            </button>
-            <button
-              type="button"
-              data-testid="tab-sobreviventes"
-              onClick={() => setActiveTab('sobreviventes')}
-              className={`min-h-[36px] px-1.5 py-1.5 rounded-sm text-[10px] sm:text-[11px] font-bold uppercase tracking-wider border transition-colors text-center truncate ${
-                activeTab === 'sobreviventes'
-                  ? 'bg-[#1e1713] border-[#e09132] text-[#e09132]'
-                  : 'bg-[#12100e] border-[#26201b] text-[#a89d91]'
-              }`}
-            >
-              2. Sobreviventes ({survivors.filter((s) => s.status !== 'morto').length}/{survivors.length})
-            </button>
-            <button
-              type="button"
-              data-testid="tab-melhorias"
-              onClick={() => setActiveTab('melhorias')}
-              className={`min-h-[36px] px-1.5 py-1.5 rounded-sm text-[10px] sm:text-[11px] font-bold uppercase tracking-wider border transition-colors text-center truncate ${
-                activeTab === 'melhorias'
-                  ? 'bg-[#1e1713] border-[#e09132] text-[#e09132]'
-                  : 'bg-[#12100e] border-[#26201b] text-[#a89d91]'
-              }`}
-            >
-              3. Estações ({upgradeEntries.reduce((s, u) => s + u.level, 0)})
-            </button>
-          </div>
-
-          {statusMessage && (
-            <div
-              data-testid="shelter-status-banner"
-              className="w-full rounded-sm bg-[#1b1612] border border-[#c87a28]/60 px-3 py-1.5 text-xs text-[#fef3c7]"
-            >
-              {statusMessage}
-            </div>
-          )}
-
-          {/* TAB 1: District Exploration Selector */}
-          {activeTab === 'operacao' && (
-            <div className="w-full space-y-2" aria-label="Seleção do Distrito de Incursão">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-bold uppercase tracking-wider text-[#c87a28]">
-                  Setor de Operação
-                </span>
-                <span className="text-[#8c8277]">
-                  {selectedDistrict === 'vila_esperanca'
-                    ? '🍃 Vento Uivante & Becos'
-                    : selectedDistrict === 'centro_comercial'
-                    ? '🚨 Sirenes Distantes & Avenidas'
-                    : '⚡ Geradores & Corredores'}
-                </span>
+      {/* ========================================================================= */}
+      {/* MODAL 2: OBJETIVOS E INTELIGÊNCIA NARRATIVA DA CIDADE                     */}
+      {/* ========================================================================= */}
+      {activeModal === 'objectives' && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+        >
+          <div className="w-full max-w-xl max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-sm bg-[#14100d] border border-[#3e2e22] p-4 sm:p-5 space-y-3.5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[#292019] pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📋</span>
+                <div>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[#38bdf8]">
+                    Inteligência Tática · Missões de Exploração
+                  </span>
+                  <h2 className="font-display text-base sm:text-lg font-bold uppercase text-[#f5f1ea]">
+                    Objetivos & Relatos da Cidade
+                  </h2>
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal('none')}
+                className="px-2.5 py-1 rounded-sm bg-[#221811] hover:bg-[#2e2017] border border-[#3d2a1d] text-xs font-bold text-[#e09132]"
+              >
+                Fechar ✕
+              </button>
+            </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 landscape:grid-cols-3 gap-2">
-                {DISTRICTS.map((d) => {
-                  const isSelected = selectedDistrict === d.id;
+            {/* City Objectives Panel */}
+            <div
+              data-testid="city-objectives-panel"
+              className="space-y-2"
+            >
+              <div className="text-[10px] font-bold uppercase tracking-widest text-[#e09132]">
+                Missões de Incursão na Cidade ({completedObjSet.size}/4)
+              </div>
+              <div className="grid grid-cols-1 gap-1.5">
+                {CITY_OBJECTIVES_CATALOG.map((obj) => {
+                  const done = completedObjSet.has(obj.id);
                   return (
-                    <button
-                      key={d.id}
-                      type="button"
-                      onClick={() => setSelectedDistrict(d.id)}
-                      className={`text-left p-2.5 rounded-sm border transition-all ${
-                        isSelected
-                          ? 'bg-[#1e1713] border-[#e09132] shadow-md shadow-amber-950/40 ring-1 ring-[#e09132]'
-                          : 'bg-[#100e0c]/90 border-[#2b241e] hover:border-[#4a3e35]'
+                    <div
+                      key={obj.id}
+                      className={`p-2.5 rounded-sm border text-xs ${
+                        done
+                          ? 'bg-[#102419] border-[#22573a] text-[#a7f3d0]'
+                          : 'bg-[#0c0908] border-[#241c16] text-[#ebe5dc]'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
-                        <span
-                          className={`text-xs font-bold uppercase tracking-wide ${
-                            isSelected ? 'text-[#e09132]' : 'text-[#ebe5dc]'
-                          }`}
-                        >
-                          {d.id === 'vila_esperanca'
-                            ? '1. Residencial'
-                            : d.id === 'centro_comercial'
-                            ? '2. Comercial'
-                            : '3. Hospitalar'}
+                      <div className="flex items-center justify-between font-bold">
+                        <span>
+                          {done ? '✓ ' : '◎ '}
+                          {obj.title}
                         </span>
-                        <span className="text-[10px] text-[#8c8277]">
-                          {d.initialTimeOfDay === 'noite'
-                            ? '🌙 Noite'
-                            : d.initialTimeOfDay === 'madrugada'
-                            ? '🌘 Escuro'
-                            : '🌅 Crepúsculo'}
+                        <span className="text-[9px] font-mono-tabular uppercase px-1.5 py-0.5 rounded-xs bg-[#000000]/40">
+                          {done ? 'Concluído' : 'Pendente'}
                         </span>
                       </div>
-                      <p className="text-[10px] text-[#a89d91] line-clamp-1 mt-0.5">{d.name}</p>
-                    </button>
+                      <p className="text-[10px] text-[#9c9185] mt-0.5 leading-snug">
+                        {obj.description}
+                      </p>
+                    </div>
                   );
                 })}
               </div>
             </div>
-          )}
 
-          {/* TAB 2: Survivors Roster & Medical Treatment */}
-          {activeTab === 'sobreviventes' && (
-            <div className="w-full grid grid-cols-1 sm:grid-cols-3 landscape:grid-cols-3 gap-2">
-              {survivors.map((surv) => {
-                const isSelected = stash.activeSurvivorId === surv.id;
-                const isDead = surv.status === 'morto';
-                return (
-                  <div
-                    key={surv.id}
-                    data-testid={`survivor-card-${surv.id}`}
-                    className={`rounded-sm p-2.5 border flex flex-col justify-between gap-2 ${
-                      isDead
-                        ? 'bg-[#140d0c]/80 border-[#4a1c18] opacity-65'
-                        : isSelected
-                        ? 'bg-[#1c1612] border-[#e09132]'
-                        : 'bg-[#12100e] border-[#2b241e]'
+            {/* Environmental Intel Records */}
+            <div
+              data-testid="environmental-intel-panel"
+              className="pt-2 border-t border-[#241c16] space-y-2"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-[#38bdf8]">
+                  Relatos e Documentos Descobertos
+                </span>
+                <span className="text-[10px] font-mono-tabular text-[#8c8277]">
+                  {discoveredIntelEntries.length}/{CITY_OBJECTIVES_CATALOG.length}
+                </span>
+              </div>
+
+              {discoveredIntelEntries.length === 0 ? (
+                <div className="rounded-sm bg-[#0c0908] border border-[#211c18] p-3 text-[11px] text-[#9c9185] leading-relaxed">
+                  Vasculhe farmácias, viaturas abandonadas, comércios e salas médicas durante as incursões para resgatar documentos com rotas e registros de sobreviventes.
+                </div>
+              ) : (
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {discoveredIntelEntries.map((rec) => (
+                    <div
+                      key={rec.intelId}
+                      className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2 text-[10px] space-y-0.5"
+                    >
+                      <div className="font-bold text-[#e09132]">
+                        📄 {rec.intelTitle}
+                      </div>
+                      <p className="text-[#b8afa4] leading-snug">{rec.intelSummary}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 3: HISTÓRICO DA ÚLTIMA INCURSÃO                                     */}
+      {/* ========================================================================= */}
+      {activeModal === 'history' && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3 sm:p-4 overflow-y-auto"
+        >
+          <div
+            data-testid="last-run-report"
+            className="w-full max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-sm bg-[#14100d] border border-[#3e2e22] p-4 sm:p-5 space-y-3.5 shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-[#292019] pb-2.5">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📜</span>
+                <div>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-[#52b788]">
+                    Registro de Batalha
+                  </span>
+                  <h2 className="font-display text-base sm:text-lg font-bold uppercase text-[#f5f1ea]">
+                    Último Relatório de Incursão
+                  </h2>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveModal('none')}
+                className="px-2.5 py-1 rounded-sm bg-[#221811] hover:bg-[#2e2017] border border-[#3d2a1d] text-xs font-bold text-[#e09132]"
+              >
+                Fechar ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Extrações</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#52b788]">
+                  {stash.runsExtracted}
+                </div>
+              </div>
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Quedas</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#ef4444]">
+                  {stash.runsDied}
+                </div>
+              </div>
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-2">
+                <div className="text-[9px] uppercase text-[#8c8277]">Abates</div>
+                <div className="font-mono-tabular text-sm font-bold text-[#e09132]">
+                  {stash.totalZombiesKilled}
+                </div>
+              </div>
+            </div>
+
+            {stash.lastRunSummary ? (
+              <div className="rounded-sm bg-[#0c0908] border border-[#241c16] p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-bold uppercase text-xs ${
+                      stash.lastRunSummary.outcome === 'extracted'
+                        ? 'text-[#52b788]'
+                        : 'text-[#e09132]'
                     }`}
                   >
-                    <div>
-                      <div className="flex items-center justify-between gap-1">
-                        <span className="text-xs font-bold text-[#ebe5dc]">{surv.name}</span>
-                        <span
-                          className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-sm ${
-                            surv.status === 'saudavel'
-                              ? 'bg-[#132a1f] text-[#52b788]'
-                              : surv.status === 'ferido'
-                              ? 'bg-[#3b1d11] text-[#f59e0b]'
-                              : 'bg-[#3d1210] text-[#ef4444]'
-                          }`}
-                        >
-                          {surv.status}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-[#8c8277]">{surv.role}</p>
-                      <div className="mt-1 text-[11px] font-mono-tabular text-[#d6cec2]">
-                        PV: {surv.hp}/{surv.maxHp}
-                      </div>
-                    </div>
+                    {stash.lastRunSummary.outcome === 'extracted'
+                      ? `✓ Extração (${stash.lastRunSummary.districtName})`
+                      : `⚠ Queda em Combate (${stash.lastRunSummary.districtName})`}
+                  </span>
+                  <span className="font-mono-tabular text-[10px] text-[#8c8277]">
+                    {stash.lastRunSummary.zombiesKilled} abates · {stash.lastRunSummary.durationSeconds}s
+                  </span>
+                </div>
 
-                    {!isDead && (
-                      <div className="flex items-center gap-1.5 pt-1">
-                        <button
-                          type="button"
-                          data-testid={`select-survivor-${surv.id}`}
-                          disabled={isSelected}
-                          onClick={() => handleSelectSurvivor(surv.id)}
-                          className="flex-1 py-1 px-2 rounded-sm bg-[#1f1a16] hover:bg-[#2c241e] disabled:opacity-50 border border-[#3a3028] text-[10px] font-bold uppercase text-[#ebe5dc]"
-                        >
-                          {isSelected ? 'Ativo' : 'Selecionar'}
-                        </button>
-                        {surv.hp < surv.maxHp && (
-                          <button
-                            type="button"
-                            data-testid={`heal-survivor-${surv.id}`}
-                            disabled={stash.totalStash.medicamentos < 1}
-                            onClick={() => handleHealSurvivor(surv.id)}
-                            className="py-1 px-2 rounded-sm bg-[#132a1f] hover:bg-[#1b3d2d] disabled:opacity-40 border border-[#3e6b4e] text-[10px] font-bold uppercase text-[#52b788]"
-                          >
-                            🩹 Curar
-                          </button>
-                        )}
-                      </div>
-                    )}
+                <div className="text-[11px] font-mono-tabular text-[#52b788]">
+                  Salvo no Estoque: +{stash.lastRunSummary.lootGained.comida} Comida, +
+                  {stash.lastRunSummary.lootGained.medicamentos} Remédios, +
+                  {stash.lastRunSummary.lootGained.municao} Munição, +
+                  {stash.lastRunSummary.lootGained.materiais} Materiais
+                </div>
+
+                {stash.lastRunSummary.outcome === 'dead' && stash.lastRunSummary.lootLost && (
+                  <div className="text-[10px] font-mono-tabular text-[#ef4444]">
+                    Perdido na queda (50% da mochila): -{stash.lastRunSummary.lootLost.comida} Com, -
+                    {stash.lastRunSummary.lootLost.medicamentos} Rem, -
+                    {stash.lastRunSummary.lootLost.municao} Mun, -
+                    {stash.lastRunSummary.lootLost.materiais} Mat
                   </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* TAB 3: Shelter Upgrades & Base Stations */}
-          {activeTab === 'melhorias' && (
-            <div className="w-full grid grid-cols-1 sm:grid-cols-2 landscape:grid-cols-2 gap-2">
-              {upgradeEntries.map((up) => {
-                const cost = getShelterUpgradeCost(up.id, up.level);
-                const isMax = up.level >= up.maxLevel;
-                return (
-                  <div
-                    key={up.id}
-                    data-testid={`upgrade-card-${up.id}`}
-                    className="rounded-sm bg-[#12100e] border border-[#2b241e] p-2.5 flex flex-col justify-between gap-2"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold uppercase text-[#e09132]">
-                          {up.name}
-                        </span>
-                        <span className="text-[10px] font-mono-tabular text-[#ebe5dc]">
-                          Nv. {up.level}/{up.maxLevel}
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-[#a89d91] mt-0.5">{up.description}</p>
-                      <p className="text-[10px] text-[#52b788] mt-1 font-mono-tabular">
-                        {up.effectSummary(up.level)}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#211c18]">
-                      {cost && !isMax ? (
-                        <span className="text-[10px] font-mono-tabular text-[#b8afa4]">
-                          Custo: {cost.materiais ?? 0} Sucata
-                          {cost.medicamentos ? ` · ${cost.medicamentos} Rem.` : ''}
-                          {cost.comida ? ` · ${cost.comida} Raç.` : ''}
-                          {cost.municao ? ` · ${cost.municao} Mun.` : ''}
-                        </span>
-                      ) : (
-                        <span className="text-[10px] font-bold uppercase text-[#52b788]">
-                          Nível Máximo
-                        </span>
-                      )}
-
-                      {!isMax && (
-                        <button
-                          type="button"
-                          data-testid={`btn-upgrade-${up.id}`}
-                          onClick={() => handleUpgrade(up.id)}
-                          className="py-1 px-2.5 rounded-sm bg-[#261d14] hover:bg-[#36291c] border border-[#c87a28] text-[10px] font-bold uppercase text-[#fef3c7]"
-                        >
-                          Aprimorar
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-[#8c8277] text-center py-4">
+                Nenhuma incursão registrada nesta sessão.
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-
-      {/* Bottom Safe Margin Control Hint */}
-      <div className="relative z-10 pt-2 text-[10px] sm:text-[11px] text-[#7a7066] tracking-wide max-w-5xl mx-auto w-full">
-        WASD ou Analógico Esq.: Mover · Controle de Mira: Apontar · Botão Dir.: Disparar/Golpear · Q: Arma · R: Recarregar · E: Saquear/Extrair
-      </div>
-    </div>
+      )}
+    </main>
   );
 }

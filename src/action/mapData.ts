@@ -1,5 +1,6 @@
 import type {
   BuildingZone,
+  DistrictConnection,
   DistrictId,
   ExtractionZone,
   LootSpot,
@@ -24,6 +25,7 @@ export interface DistrictDefinition {
   worldHeight: number;
   playerSpawn: { x: number; y: number };
   extractionZone: ExtractionZone;
+  connections: DistrictConnection[];
   buildings: BuildingZone[];
   obstacles: ObstacleRect[];
   lootSpots: LootSpot[];
@@ -44,11 +46,43 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
   playerSpawn: { x: 220, y: 980 },
   extractionZone: {
     id: 'ext_portao_abrigo',
-    label: 'Portão do Abrigo (Zona de Extração)',
+    label: 'Portão da Zona Segura (Extração)',
     x: 150,
     y: 1050,
     radius: 70,
   },
+  connections: [
+    {
+      id: 'conn_vila_to_centro',
+      fromDistrict: 'vila_esperanca',
+      toDistrict: 'centro_comercial',
+      toDistrictName: 'Centro Comercial São Jorge',
+      label: 'Avenida Leste → Centro Comercial São Jorge',
+      direction: 'east',
+      x: 1538,
+      y: 560,
+      radius: 58,
+      corridorRect: { x: 1510, y: 480, width: 90, height: 160 },
+      arrivalX: 96,
+      arrivalY: 560,
+      arrivalFacingAngle: 0,
+    },
+    {
+      id: 'conn_vila_to_medico',
+      fromDistrict: 'vila_esperanca',
+      toDistrict: 'complexo_medico',
+      toDistrictName: 'Complexo Médico & Galpão',
+      label: 'Via Norte → Complexo Médico & Galpão',
+      direction: 'north',
+      x: 750,
+      y: 62,
+      radius: 58,
+      corridorRect: { x: 670, y: 0, width: 160, height: 90 },
+      arrivalX: 750,
+      arrivalY: 1104,
+      arrivalFacingAngle: -Math.PI / 2,
+    },
+  ],
   buildings: [
     {
       id: 'bld_casa_santos',
@@ -170,11 +204,13 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
     },
   ],
   obstacles: [
-    // Outer walls
-    { id: 'v_wall_top', x: 0, y: 0, width: 1600, height: 28, kind: 'wall' },
+    // Outer walls with open street passages at North Avenue (x: 670..830) and East Avenue (y: 480..640)
+    { id: 'v_wall_top_w', x: 0, y: 0, width: 670, height: 28, kind: 'wall' },
+    { id: 'v_wall_top_e', x: 830, y: 0, width: 770, height: 28, kind: 'wall' },
     { id: 'v_wall_bottom', x: 0, y: 1172, width: 1600, height: 28, kind: 'wall' },
     { id: 'v_wall_left', x: 0, y: 0, width: 28, height: 1200, kind: 'wall' },
-    { id: 'v_wall_right', x: 1572, y: 0, width: 28, height: 1200, kind: 'wall' },
+    { id: 'v_wall_right_n', x: 1572, y: 0, width: 28, height: 480, kind: 'wall' },
+    { id: 'v_wall_right_s', x: 1572, y: 640, width: 28, height: 560, kind: 'wall' },
 
     // Casa Santos (living room, kitchen & hallway)
     { id: 'cs_n', x: 140, y: 130, width: 440, height: 22, kind: 'wall' },
@@ -232,6 +268,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { comida: 2, municao: 6 },
+      clueText: 'Um mapa amassado e algumas moedas. Nada de útil.',
     },
     {
       id: 'loot_cs_geladeira',
@@ -248,6 +285,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { comida: 4, materiais: 1 },
+      clueText: 'Um bilhete na porta: "Fomos para o centro. Se cuide, filho".',
     },
     {
       id: 'loot_cs_armario',
@@ -264,6 +302,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { medicamentos: 2, materiais: 2 },
+      clueText: 'O diário da família está aqui. A última entrada é desesperadora.',
     },
     {
       id: 'loot_cs_gaveta',
@@ -296,6 +335,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { municao: 8, materiais: 2 },
+      clueText: 'Roupas espalhadas e marcas de sangue no porta-malas.',
     },
     {
       id: 'loot_mp_despensa',
@@ -312,6 +352,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { comida: 4, materiais: 2 },
+      clueText: 'Muitas latas vazias. Alguém já passou por aqui.',
     },
     {
       id: 'loot_oficina_bancada',
@@ -328,6 +369,7 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { materiais: 5, medicamentos: 1 },
+      clueText: 'Uma rádio desmontada e ferramentas oxidadas.',
     },
     {
       id: 'loot_oficina_cofre',
@@ -344,18 +386,20 @@ export const DISTRICT_VILA_ESPERANCA: DistrictDefinition = {
       looted: false,
       searchState: 'available',
       contents: { municao: 14, materiais: 3 },
+      isHighValue: true,
+      clueText: 'Uma ordem de serviço para um veículo militar está no cofre.',
     },
   ],
   zombies: [
     { id: 'v_z1', archetype: 'lento', x: 560, y: 780 },
     { id: 'v_z2', archetype: 'lento', x: 340, y: 540 },
     { id: 'v_z3', archetype: 'lento', x: 290, y: 310 }, // Inside Casa Santos
-    { id: 'v_z4', archetype: 'lento', x: 860, y: 540 },
+    { id: 'v_z4', archetype: 'corredor', x: 860, y: 540 },
     { id: 'v_z5', archetype: 'lento', x: 1160, y: 320 }, // Inside Mercearia
     { id: 'v_z6', archetype: 'lento', x: 640, y: 380 },
-    { id: 'v_z7', archetype: 'lento', x: 1080, y: 560 },
+    { id: 'v_z7', archetype: 'bruto', x: 1080, y: 560 },
     { id: 'v_z8', archetype: 'lento', x: 860, y: 950 },
-    { id: 'v_z9', archetype: 'lento', x: 460, y: 280 }, // Inside Casa Santos
+    { id: 'v_z9', archetype: 'corredor', x: 460, y: 280 }, // Inside Casa Santos
     { id: 'v_z10', archetype: 'lento', x: 1220, y: 260 }, // Inside Mercearia
     { id: 'v_z11', archetype: 'lento', x: 1220, y: 890 }, // Inside Oficina
   ],
@@ -380,6 +424,38 @@ export const DISTRICT_CENTRO_COMERCIAL: DistrictDefinition = {
     y: 1060,
     radius: 72,
   },
+  connections: [
+    {
+      id: 'conn_centro_to_vila',
+      fromDistrict: 'centro_comercial',
+      toDistrict: 'vila_esperanca',
+      toDistrictName: 'Vila Residencial Esperança',
+      label: 'Avenida Oeste → Vila Residencial Esperança',
+      direction: 'west',
+      x: 62,
+      y: 560,
+      radius: 58,
+      corridorRect: { x: 0, y: 480, width: 90, height: 160 },
+      arrivalX: 1504,
+      arrivalY: 560,
+      arrivalFacingAngle: Math.PI,
+    },
+    {
+      id: 'conn_centro_to_medico',
+      fromDistrict: 'centro_comercial',
+      toDistrict: 'complexo_medico',
+      toDistrictName: 'Complexo Médico & Galpão',
+      label: 'Avenida Norte → Complexo Médico & Galpão',
+      direction: 'north',
+      x: 750,
+      y: 62,
+      radius: 58,
+      corridorRect: { x: 670, y: 0, width: 160, height: 90 },
+      arrivalX: 1504,
+      arrivalY: 560,
+      arrivalFacingAngle: Math.PI,
+    },
+  ],
   buildings: [
     {
       id: 'bld_supermercado',
@@ -500,9 +576,12 @@ export const DISTRICT_CENTRO_COMERCIAL: DistrictDefinition = {
     },
   ],
   obstacles: [
-    { id: 'c_wall_top', x: 0, y: 0, width: 1600, height: 28, kind: 'wall' },
+    // Outer walls with open street passages at North Avenue (x: 670..830) and West Avenue (y: 480..640)
+    { id: 'c_wall_top_w', x: 0, y: 0, width: 670, height: 28, kind: 'wall' },
+    { id: 'c_wall_top_e', x: 830, y: 0, width: 770, height: 28, kind: 'wall' },
     { id: 'c_wall_bottom', x: 0, y: 1172, width: 1600, height: 28, kind: 'wall' },
-    { id: 'c_wall_left', x: 0, y: 0, width: 28, height: 1200, kind: 'wall' },
+    { id: 'c_wall_left_n', x: 0, y: 0, width: 28, height: 480, kind: 'wall' },
+    { id: 'c_wall_left_s', x: 0, y: 640, width: 28, height: 560, kind: 'wall' },
     { id: 'c_wall_right', x: 1572, y: 0, width: 28, height: 1200, kind: 'wall' },
 
     // Supermercado walls & internal aisles
@@ -710,6 +789,38 @@ export const DISTRICT_COMPLEXO_MEDICO: DistrictDefinition = {
     y: 1040,
     radius: 70,
   },
+  connections: [
+    {
+      id: 'conn_medico_to_vila',
+      fromDistrict: 'complexo_medico',
+      toDistrict: 'vila_esperanca',
+      toDistrictName: 'Vila Residencial Esperança',
+      label: 'Corredor Sul → Vila Residencial Esperança',
+      direction: 'south',
+      x: 750,
+      y: 1138,
+      radius: 58,
+      corridorRect: { x: 670, y: 1110, width: 160, height: 90 },
+      arrivalX: 750,
+      arrivalY: 96,
+      arrivalFacingAngle: Math.PI / 2,
+    },
+    {
+      id: 'conn_medico_to_centro',
+      fromDistrict: 'complexo_medico',
+      toDistrict: 'centro_comercial',
+      toDistrictName: 'Centro Comercial São Jorge',
+      label: 'Via Leste → Centro Comercial São Jorge',
+      direction: 'east',
+      x: 1538,
+      y: 560,
+      radius: 58,
+      corridorRect: { x: 1510, y: 480, width: 90, height: 160 },
+      arrivalX: 750,
+      arrivalY: 96,
+      arrivalFacingAngle: Math.PI / 2,
+    },
+  ],
   buildings: [
     {
       id: 'bld_pronto_socorro',
@@ -830,10 +941,13 @@ export const DISTRICT_COMPLEXO_MEDICO: DistrictDefinition = {
     },
   ],
   obstacles: [
+    // Outer walls with open street passages at South Avenue (x: 670..830) and East Avenue (y: 480..640)
     { id: 'm_wall_top', x: 0, y: 0, width: 1600, height: 28, kind: 'wall' },
-    { id: 'm_wall_bottom', x: 0, y: 1172, width: 1600, height: 28, kind: 'wall' },
+    { id: 'm_wall_bottom_w', x: 0, y: 1172, width: 670, height: 28, kind: 'wall' },
+    { id: 'm_wall_bottom_e', x: 830, y: 1172, width: 770, height: 28, kind: 'wall' },
     { id: 'm_wall_left', x: 0, y: 0, width: 28, height: 1200, kind: 'wall' },
-    { id: 'm_wall_right', x: 1572, y: 0, width: 28, height: 1200, kind: 'wall' },
+    { id: 'm_wall_right_n', x: 1572, y: 0, width: 28, height: 480, kind: 'wall' },
+    { id: 'm_wall_right_s', x: 1572, y: 640, width: 28, height: 560, kind: 'wall' },
 
     // Pronto-Socorro
     { id: 'ps_n', x: 130, y: 120, width: 480, height: 22, kind: 'wall' },

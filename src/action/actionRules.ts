@@ -3,9 +3,14 @@ import {
   type AcousticCue,
   type ActionInputState,
   type ActionLootBag,
+  type ActionResourceType,
   type ActionWorldState,
   type BulletEntity,
+  type DeathPenaltyBreakdown,
+  type DistrictConnection,
   type DistrictId,
+  type DistrictRuntimeState,
+  type IncursionObjective,
   type InteractPrompt,
   type MinimapSnapshot,
   type ObstacleRect,
@@ -157,6 +162,78 @@ export const CAMPAIGN_EVACUATION_GOAL = {
   ...CAMPAIGN_EVACUATION_COST,
 };
 
+export const CITY_OBJECTIVES_CATALOG: Omit<IncursionObjective, 'completed'>[] = [
+  {
+    id: 'obj_suprimentos_vila',
+    title: 'Suprimentos da Vila Esperança',
+    description: 'Vasculhe o Armário da Residência Santos ou a Bancada da Oficina do Seu Mário.',
+    districtId: 'vila_esperanca',
+    districtName: 'Vila Residencial Esperança',
+    targetSpotIds: ['loot_cs_armario', 'loot_oficina_bancada', 'loot_oficina_cofre'],
+    intelId: 'intel_diario_vila',
+    intelTitle: 'Bilhete da Família Santos (Vila Esperança)',
+    intelSummary:
+      'As sirenes tocaram às 04h. O bloqueio policial na Avenida Leste cedeu quando a multidão fugiu em direção ao Centro Comercial São Jorge.',
+  },
+  {
+    id: 'obj_estoque_comercial',
+    title: 'Reserva Farmacêutica & Policial',
+    description: 'Chegue ao Centro Comercial São Jorge e reviste o Cofre da Farmácia 24h ou a Viatura Policial.',
+    districtId: 'centro_comercial',
+    districtName: 'Centro Comercial São Jorge',
+    targetSpotIds: ['loot_c_cofre_farmacia', 'loot_c_viatura_porta_malas', 'loot_c_armario_seguranca'],
+    intelId: 'intel_relatorio_comercial',
+    intelTitle: 'Rádio da Viatura 14 (Centro Comercial)',
+    intelSummary:
+      'Unidades táticas recuaram pela Avenida Norte rumo ao Complexo Médico. Os lotes de antibióticos e munição 9mm ficaram retidos no perímetro comercial.',
+  },
+  {
+    id: 'obj_amostras_medico',
+    title: 'Investigação no Complexo Médico',
+    description: 'Alcance o Complexo Médico ao Norte e examine a Bancada do Laboratório ou o Cofre de Quarentena.',
+    districtId: 'complexo_medico',
+    districtName: 'Complexo Médico & Galpão',
+    targetSpotIds: ['loot_m_bancada_lab', 'loot_m_cofre_quimico', 'loot_m_armario_farmacos'],
+    intelId: 'intel_laudo_quarentena',
+    intelTitle: 'Laudo de Contenção Biológica (Complexo Médico)',
+    intelSummary:
+      'A cepa acelera o metabolismo motor em corredores, mas reduz a percepção visual no escuro. Feixes de luz direta e disparos atraem infectados a centenas de metros.',
+  },
+];
+
+export function createIncursionObjectives(completedIds: string[] = []): IncursionObjective[] {
+  const doneSet = new Set(completedIds);
+  return CITY_OBJECTIVES_CATALOG.map((item) => ({
+    ...item,
+    targetSpotIds: [...item.targetSpotIds],
+    completed: doneSet.has(item.id),
+  }));
+}
+
+export function calculateDeathLootPenalty(runLoot: ActionLootBag): DeathPenaltyBreakdown {
+  const keys: ActionResourceType[] = ['comida', 'medicamentos', 'municao', 'materiais'];
+  const collected = createEmptyLootBag();
+  const lost = createEmptyLootBag();
+  const recovered = createEmptyLootBag();
+
+  for (const key of keys) {
+    const raw = runLoot[key];
+    const amount = typeof raw === 'number' && Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+    collected[key] = amount;
+    // Penalidade parcial de 50%: preserva metade arredondada para baixo e perde a outra metade
+    const rec = Math.floor(amount * 0.5);
+    const lst = amount - rec;
+    recovered[key] = rec;
+    lost[key] = lst;
+  }
+
+  return {
+    collected,
+    lost,
+    recovered,
+  };
+}
+
 export function createInitialPersistentStash(): PersistentShelterStash {
   return {
     schemaVersion: ACTION_STASH_SCHEMA_VERSION,
@@ -171,6 +248,9 @@ export function createInitialPersistentStash(): PersistentShelterStash {
     runsDied: 0,
     totalZombiesKilled: 0,
     extractedRunIds: [],
+    discoveredDistricts: ['vila_esperanca'],
+    completedObjectiveIds: [],
+    discoveredIntelIds: [],
     lastRunSummary: null,
     updatedAt: new Date().toISOString(),
     day: 1,
@@ -180,7 +260,7 @@ export function createInitialPersistentStash(): PersistentShelterStash {
     evacuationProgress: 0,
     evacuationCompleted: false,
     shelterLog: [
-      'Dia 1: Abrigo estabelecido. Construa o Transmissor de Rádio e reúna suprimentos para acionar o Comboio de Evacuação.',
+      'Dia 1: Ponto Seguro estabelecido na Vila Esperança. Explore as regiões conectadas da cidade, cumpra objetivos e extraia com vida.',
     ],
   };
 }
@@ -325,6 +405,12 @@ export function createZombieFromArchetype(
     alertState: 'idle',
     alertTimer: 0,
     targetPoint: null,
+    patrolOrigin: { x, y },
+    patrolTarget: null,
+    patrolPauseTimer: 0.5 + Math.random() * 2.0,
+    stuckTimer: 0,
+    avoidanceDir: Math.random() > 0.5 ? 1 : -1,
+    searchLookPhase: 0,
     visibility: 'hidden',
     lastHeardTimer: 0,
     hp: cfg.hp,
@@ -352,14 +438,11 @@ export function createInitialWorldState(
 ): ActionWorldState {
   const def = getDistrictDefinition(districtId);
   const upgrades = stash?.upgrades ?? createInitialUpgrades();
-  const activeSurvivor = stash?.survivors?.find((s) => s.id === stash.activeSurvivorId);
 
   const bonusCapacity = (upgrades.oficina || 0) * 6;
   const bonusReserveAmmo = (upgrades.oficina || 0) * 4;
   const bonusMaxHp = (upgrades.enfermaria || 0) * 15;
-  const startingHp = activeSurvivor
-    ? Math.max(35, Math.min(100 + bonusMaxHp, Math.round((activeSurvivor.hp / activeSurvivor.maxHp) * (100 + bonusMaxHp))))
-    : 100 + bonusMaxHp;
+  const startingHp = 100 + bonusMaxHp;
   const flashlightRange = 320 + (upgrades.torre_radio || 0) * 38;
   const flashlightDrain = Number((1.15 * Math.pow(0.75, upgrades.torre_radio || 0)).toFixed(3));
 
@@ -442,6 +525,15 @@ export function createInitialWorldState(
       doors: b.doors ? b.doors.map((d) => ({ ...d })) : [],
       windows: b.windows ? b.windows.map((w) => ({ ...w })) : [],
     })),
+    connections: (def.connections ?? []).map((c) => ({
+      ...c,
+      corridorRect: { ...c.corridorRect },
+    })),
+    districtStates: {},
+    visitedDistricts: [def.id],
+    objectives: createIncursionObjectives(stash?.completedObjectiveIds ?? []),
+    discoveredIntelIds: [...(stash?.discoveredIntelIds ?? [])],
+    transitionCooldown: 0,
     extractionZone: { ...def.extractionZone },
     runLoot: {
       comida: 0,
@@ -453,18 +545,188 @@ export function createInitialWorldState(
     zombiesKilled: 0,
     shotsFired: 0,
     activePrompt: null,
-    lastEventBanner: `${def.name}: Explore o setor, vasculhe os objetos e extraia com vida.`,
+    lastEventBanner: `${def.name}: Explore a cidade conectada, cumpra objetivos e extraia com vida.`,
     feedbacks: [],
     extractionProcessed: false,
     activeLooting: null,
     noiseEvents: [],
+    impactEvents: [],
     acousticCues: [],
   };
 
   updateBuildingRoofs(world, 1.0);
   updateWorldVisibility(world);
+  evaluateObjectives(world);
   world.activePrompt = findNearestInteractable(world);
   return world;
+}
+
+export function snapshotCurrentDistrictState(world: ActionWorldState): DistrictRuntimeState {
+  return {
+    districtId: world.districtId,
+    zombies: world.zombies.map((z) => ({
+      ...z,
+      targetPoint: z.targetPoint ? { ...z.targetPoint } : null,
+    })),
+    lootSpots: world.lootSpots.map((l) => ({
+      ...l,
+      contents: { ...l.contents },
+    })),
+    buildings: world.buildings.map((b) => ({
+      ...b,
+      roofAlpha: 1.0,
+      doors: b.doors ? b.doors.map((d) => ({ ...d })) : [],
+      windows: b.windows ? b.windows.map((w) => ({ ...w })) : [],
+    })),
+    nightReinforcementsSpawned: world.nightReinforcementsSpawned ?? 0,
+  };
+}
+
+export function evaluateObjectives(world: ActionWorldState): void {
+  if (!world.objectives) return;
+
+  // Gather all looted spot IDs across the current active district and any visited district in districtStates
+  const lootedIds = new Set<string>();
+  for (const spot of world.lootSpots) {
+    if (spot.looted) {
+      lootedIds.add(spot.id);
+    }
+  }
+  for (const dState of Object.values(world.districtStates ?? {})) {
+    if (!dState) continue;
+    for (const spot of dState.lootSpots) {
+      if (spot.looted) {
+        lootedIds.add(spot.id);
+      }
+    }
+  }
+
+  for (const obj of world.objectives) {
+    if (obj.completed) continue;
+    const hit = obj.targetSpotIds.some((spotId) => lootedIds.has(spotId));
+    if (hit) {
+      obj.completed = true;
+      if (obj.intelId && !world.discoveredIntelIds.includes(obj.intelId)) {
+        world.discoveredIntelIds.push(obj.intelId);
+      }
+      addFloatingFeedback(
+        world,
+        `Objetivo: ${obj.title}`,
+        world.player.x,
+        world.player.y - 34,
+        '#38bdf8'
+      );
+      world.lastEventBanner = `Objetivo concluído: ${obj.title} (${obj.intelTitle} registrado)!`;
+    }
+  }
+}
+
+export function transitionToDistrict(
+  world: ActionWorldState,
+  connectionIdOrDistrictId: string
+): boolean {
+  if (world.status !== 'playing') return false;
+
+  const conn: DistrictConnection | undefined = (world.connections ?? []).find(
+    (c) => c.id === connectionIdOrDistrictId || c.toDistrict === connectionIdOrDistrictId
+  );
+  const targetDistrictId: DistrictId = conn
+    ? conn.toDistrict
+    : (connectionIdOrDistrictId as DistrictId);
+
+  const def = getDistrictDefinition(targetDistrictId);
+  if (!def || def.id === world.districtId) return false;
+
+  // 1. Save current district state so looted containers and dead zombies stay persisted
+  if (!world.districtStates) {
+    world.districtStates = {};
+  }
+  world.districtStates[world.districtId] = snapshotCurrentDistrictState(world);
+
+  // 2. Restore previously visited target district state OR initialize fresh from static definition
+  const savedTarget = world.districtStates[def.id];
+  if (savedTarget) {
+    world.zombies = savedTarget.zombies.map((z) => ({
+      ...z,
+      targetPoint: z.targetPoint ? { ...z.targetPoint } : null,
+    }));
+    world.lootSpots = savedTarget.lootSpots.map((l) => ({
+      ...l,
+      contents: { ...l.contents },
+    }));
+    world.buildings = savedTarget.buildings.map((b) => ({
+      ...b,
+      roofAlpha: 1.0,
+      doors: b.doors ? b.doors.map((d) => ({ ...d })) : [],
+      windows: b.windows ? b.windows.map((w) => ({ ...w })) : [],
+    }));
+    world.nightReinforcementsSpawned = savedTarget.nightReinforcementsSpawned ?? 0;
+  } else {
+    world.zombies = def.zombies.map((s, idx) =>
+      createZombieFromArchetype(s.id, s.archetype, s.x, s.y, idx)
+    );
+    world.lootSpots = def.lootSpots.map((l) => ({
+      ...l,
+      searchState: l.looted ? 'searched' : 'available',
+      isVisibleToPlayer: false,
+      contents: { ...l.contents },
+    }));
+    world.buildings = def.buildings.map((b) => ({
+      ...b,
+      roofColor: b.roofColor ?? 0x3b2d24,
+      roofAlpha: 1.0,
+      doors: b.doors ? b.doors.map((d) => ({ ...d })) : [],
+      windows: b.windows ? b.windows.map((w) => ({ ...w })) : [],
+    }));
+    world.nightReinforcementsSpawned = 0;
+  }
+
+  // 3. Switch active district metadata and static geometry
+  world.districtId = def.id;
+  world.districtName = def.name;
+  world.worldWidth = def.worldWidth;
+  world.worldHeight = def.worldHeight;
+  world.obstacles = def.obstacles.map((o) => ({ ...o }));
+  world.extractionZone = { ...def.extractionZone };
+  world.connections = (def.connections ?? []).map((c) => ({
+    ...c,
+    corridorRect: { ...c.corridorRect },
+  }));
+
+  // 4. Position player at coherent arrival point in the connected street
+  const p = world.player;
+  p.x = conn ? conn.arrivalX : def.playerSpawn.x;
+  p.y = conn ? conn.arrivalY : def.playerSpawn.y;
+  p.vx = 0;
+  p.vy = 0;
+  if (conn) {
+    p.facingAngle = conn.arrivalFacingAngle;
+  }
+  p.isInsideBuilding = null;
+  p.currentBuildingName = null;
+  world.isInsideBuilding = false;
+  world.currentBuildingName = null;
+  world.bullets = [];
+  world.activeLooting = null;
+  world.noiseEvents = [];
+  world.transitionCooldown = 0.85;
+
+  if (!world.visitedDistricts) {
+    world.visitedDistricts = [];
+  }
+  if (!world.visitedDistricts.includes(def.id)) {
+    world.visitedDistricts.push(def.id);
+  }
+
+  updateBuildingRoofs(world, 1.0);
+  updateWorldVisibility(world);
+  updateEngagedTargets(world);
+  evaluateObjectives(world);
+  world.activePrompt = findNearestInteractable(world);
+
+  addFloatingFeedback(world, `Setor: ${def.name}`, p.x, p.y - 28, '#38bdf8');
+  world.lastEventBanner = `Chegou a ${def.name}. Recursos da mochila e estado da cidade preservados.`;
+  return true;
 }
 
 export function toggleFlashlight(world: ActionWorldState): boolean {
@@ -560,6 +822,28 @@ export function emitNoise(
   // Keep list bounded
   if (world.noiseEvents.length > 20) {
     world.noiseEvents.shift();
+  }
+}
+
+export function emitImpact(
+  world: ActionWorldState,
+  x: number,
+  y: number,
+  angle: number,
+  kind: 'wall' | 'car' | 'crate' | 'barrier' | 'flesh'
+): void {
+  if (!world.impactEvents) world.impactEvents = [];
+  world.impactEvents.push({
+    id: `impact_${world.elapsedTime.toFixed(3)}_${world.impactEvents.length}`,
+    x,
+    y,
+    angle,
+    kind,
+    timer: 0.35,
+  });
+
+  if (world.impactEvents.length > 15) {
+    world.impactEvents.shift();
   }
 }
 
@@ -668,12 +952,12 @@ export function moveEntityWithCollisions(
   return { x: nextX, y: nextY, collided: anyCollision };
 }
 
-export function pointHitsObstacle(
+export function getObstacleAtPoint(
   x: number,
   y: number,
   radius: number,
   obstacles: ObstacleRect[]
-): boolean {
+): ObstacleRect | null {
   for (const obs of obstacles) {
     if (
       x + radius > obs.x &&
@@ -681,10 +965,19 @@ export function pointHitsObstacle(
       y + radius > obs.y &&
       y - radius < obs.y + obs.height
     ) {
-      return true;
+      return obs;
     }
   }
-  return false;
+  return null;
+}
+
+export function pointHitsObstacle(
+  x: number,
+  y: number,
+  radius: number,
+  obstacles: ObstacleRect[]
+): boolean {
+  return getObstacleAtPoint(x, y, radius, obstacles) !== null;
 }
 
 export function segmentIntersectsRect(
@@ -1280,6 +1573,8 @@ export function performMeleeSwing(world: ActionWorldState): {
       Math.sin(bestAngleToTarget),
       cfg.knockback
     );
+    // Visual and acoustic feedback for melee impact
+    emitImpact(world, bestTarget.x, bestTarget.y, bestAngleToTarget, 'flesh');
     world.hitstopTimer = 0.04;
     world.cameraShakeTrauma = Math.min(1, world.cameraShakeTrauma + 0.22);
   }
@@ -1349,7 +1644,8 @@ export function applyDamageToPlayer(
   if (p.hp <= 0) {
     p.hp = 0;
     world.status = 'dead';
-    world.lastEventBanner = 'Você tombou em combate. O saque não extraído foi perdido.';
+    world.lastEventBanner =
+      'Você tombou em combate. Metade dos recursos coletados na incursão foi perdida; o restante foi recuperado.';
   }
 
   return true;
@@ -1477,6 +1773,7 @@ export function collectFromLootSpot(
   const summary = `${spot.label}: ${parts.join(', ')}`;
   world.lastEventBanner = `Coletado — ${summary}`;
   addFloatingFeedback(world, parts.join(' '), spot.x, spot.y - 18, '#10b981');
+  evaluateObjectives(world);
   return { collected: true, full: false, summary };
 }
 
@@ -1517,11 +1814,27 @@ export function findNearestInteractable(world: ActionWorldState): InteractPrompt
     return {
       targetType: 'extraction',
       id: ext.id,
-      label: 'Extrair no Portão do Abrigo (Concluir Incursão)',
-      actionVerb: 'Extrair no Abrigo',
+      label: `${ext.label} (Concluir Incursão)`,
+      actionVerb: 'Extrair com Saque',
       x: ext.x,
       y: ext.y,
     };
+  }
+
+  // 3. Check Connected City Street Transitions
+  for (const conn of world.connections ?? []) {
+    const distToConn = Math.hypot(conn.x - p.x, conn.y - p.y);
+    if (distToConn <= conn.radius + p.radius + 20) {
+      return {
+        targetType: 'transition',
+        id: conn.id,
+        label: conn.label,
+        actionVerb: `Seguir → ${conn.toDistrictName}`,
+        toDistrict: conn.toDistrict,
+        x: conn.x,
+        y: conn.y,
+      };
+    }
   }
 
   return null;
@@ -1585,11 +1898,31 @@ export function findInteractableAtWorldPoint(
     return {
       targetType: 'extraction',
       id: ext.id,
-      label: 'Extrair no Portão do Abrigo (Concluir Incursão)',
-      actionVerb: 'Extrair no Abrigo',
+      label: `${ext.label} (Concluir Incursão)`,
+      actionVerb: 'Extrair com Saque',
       x: ext.x,
       y: ext.y,
     };
+  }
+
+  // 3. Check Connected City Street Transitions
+  for (const conn of world.connections ?? []) {
+    const distPlayerToConn = Math.hypot(conn.x - p.x, conn.y - p.y);
+    const distTouchToConn = Math.hypot(worldX - conn.x, worldY - conn.y);
+    if (
+      distTouchToConn <= conn.radius + 32 &&
+      distPlayerToConn <= conn.radius + p.radius + 24
+    ) {
+      return {
+        targetType: 'transition',
+        id: conn.id,
+        label: conn.label,
+        actionVerb: `Seguir → ${conn.toDistrictName}`,
+        toDistrict: conn.toDistrict,
+        x: conn.x,
+        y: conn.y,
+      };
+    }
   }
 
   return null;
@@ -1599,7 +1932,7 @@ export function tryDirectObjectInteractAtWorldPoint(
   world: ActionWorldState,
   worldX: number,
   worldY: number
-): { consumed: boolean; targetType?: 'loot' | 'extraction'; id?: string } {
+): { consumed: boolean; targetType?: 'loot' | 'extraction' | 'transition'; id?: string } {
   if (world.status !== 'playing') return { consumed: false };
   const hit = findInteractableAtWorldPoint(world, worldX, worldY);
   if (!hit) return { consumed: false };
@@ -1650,14 +1983,15 @@ export function updateBuildingRoofs(world: ActionWorldState, dt: number): void {
 
 export function triggerInteract(world: ActionWorldState): {
   interacted: boolean;
-  action?: 'looted' | 'extracted' | 'inventory_full';
+  action?: 'looted' | 'extracted' | 'transitioned' | 'inventory_full';
   summary?: string;
 } {
   if (world.status !== 'playing') return { interacted: false };
 
   const prompt = findNearestInteractable(world);
   if (!prompt) {
-    world.lastEventBanner = 'Aproxime-se de um veículo, armário, gaveta ou do Portão de Extração.';
+    world.lastEventBanner =
+      'Aproxime-se de um veículo, móvel saqueável, passagem de setor ou ponto de extração.';
     return { interacted: false };
   }
 
@@ -1675,9 +2009,21 @@ export function triggerInteract(world: ActionWorldState): {
     return { interacted: true, action: 'looted', summary: res.summary };
   }
 
+  if (prompt.targetType === 'transition') {
+    const ok = transitionToDistrict(world, prompt.id);
+    if (ok) {
+      return {
+        interacted: true,
+        action: 'transitioned',
+        summary: prompt.label,
+      };
+    }
+    return { interacted: false };
+  }
+
   if (prompt.targetType === 'extraction') {
     world.status = 'extracted';
-    world.lastEventBanner = 'Extração concluída com sucesso! Suprimentos salvos no abrigo.';
+    world.lastEventBanner = 'Extração concluída com sucesso! Suprimentos salvos no estoque permanente.';
     return {
       interacted: true,
       action: 'extracted',
@@ -1706,6 +2052,16 @@ export function stepWorld(
     world.feedbacks[i].y -= dt * 22;
     if (world.feedbacks[i].ttl <= 0) {
       world.feedbacks.splice(i, 1);
+    }
+  }
+
+  // Decay impact events
+  if (world.impactEvents) {
+    for (let i = world.impactEvents.length - 1; i >= 0; i--) {
+      world.impactEvents[i].timer -= dt;
+      if (world.impactEvents[i].timer <= 0) {
+        world.impactEvents.splice(i, 1);
+      }
     }
   }
 
@@ -1921,6 +2277,26 @@ export function stepWorld(
   p.x = movedPlayer.x;
   p.y = movedPlayer.y;
 
+  // --- Connected City Street Passage Traversal ---
+  world.transitionCooldown = Math.max(0, (world.transitionCooldown ?? 0) - dt);
+  if (world.transitionCooldown <= 0 && (world.connections?.length ?? 0) > 0) {
+    for (const conn of world.connections) {
+      const inCorridorX =
+        p.x >= conn.corridorRect.x && p.x <= conn.corridorRect.x + conn.corridorRect.width;
+      const inCorridorY =
+        p.y >= conn.corridorRect.y && p.y <= conn.corridorRect.y + conn.corridorRect.height;
+      const reachedBorder =
+        (conn.direction === 'east' && p.x >= world.worldWidth - p.radius - 12 && inCorridorY) ||
+        (conn.direction === 'west' && p.x <= p.radius + 12 && inCorridorY) ||
+        (conn.direction === 'north' && p.y <= p.radius + 12 && inCorridorX) ||
+        (conn.direction === 'south' && p.y >= world.worldHeight - p.radius - 12 && inCorridorX);
+      if (reachedBorder) {
+        transitionToDistrict(world, conn.id);
+        return world;
+      }
+    }
+  }
+
   // --- Building Roof & Interior Transition (tracks player's real position after movement) ---
   updateBuildingRoofs(world, dt);
 
@@ -2011,14 +2387,18 @@ export function stepWorld(
     b.x += b.vx * dt;
     b.y += b.vy * dt;
 
-    // Check obstacle collision
+    // Check obstacle collision with impact kind
+    const obs = getObstacleAtPoint(b.x, b.y, b.radius, world.obstacles);
     if (
       b.x < 0 ||
       b.x > world.worldWidth ||
       b.y < 0 ||
       b.y > world.worldHeight ||
-      pointHitsObstacle(b.x, b.y, b.radius, world.obstacles)
+      obs
     ) {
+      if (obs) {
+        emitImpact(world, b.x, b.y, Math.atan2(b.vy, b.vx), obs.kind);
+      }
       world.bullets.splice(i, 1);
       continue;
     }
@@ -2031,6 +2411,7 @@ export function stepWorld(
       if (dist <= z.radius + b.radius + 2) {
         const mag = Math.hypot(b.vx, b.vy) || 1;
         damageZombie(world, z, b.damage, b.vx / mag, b.vy / mag, 150);
+        emitImpact(world, b.x, b.y, Math.atan2(b.vy, b.vx), 'flesh');
         hitZombie = true;
         break;
       }
@@ -2041,8 +2422,10 @@ export function stepWorld(
     }
   }
 
-  // Step Zombies: Directional Sight + Acoustic Detection AI + Smooth Slower Pursuit
+  // Step Zombies: Directional Sight + Acoustic Detection AI + Patrol + Investigation
   let activeWindups = 0;
+  const otherZombies = world.zombies.filter((z) => !z.dead);
+
   for (let i = world.zombies.length - 1; i >= 0; i--) {
     const z = world.zombies[i];
     z.hitFlashTimer = Math.max(0, z.hitFlashTimer - dt);
@@ -2103,62 +2486,111 @@ export function stepWorld(
       }
     }
 
-    let isAlerted = false;
-    let targetX = p.x;
-    let targetY = p.y;
-
+    let currentlyPerceived = false;
     if (hasClearLOS && inVisionCone && distToPlayer <= effectiveSightRange) {
-      isAlerted = true;
+      currentlyPerceived = true;
+    } else if (hasClearLOS && distToPlayer <= 110) {
+      // Close footstep / breathing detection even from behind when not separated by a solid wall
+      currentlyPerceived = true;
+    }
+
+    // --- AI STATE MACHINE ---
+    if (currentlyPerceived) {
       z.alertState = 'hunting';
       z.alertTimer = 6.0;
       z.targetPoint = { x: p.x, y: p.y };
-    } else if (hasClearLOS && distToPlayer <= 110) {
-      // Close footstep / breathing detection even from behind when not separated by a solid wall
-      isAlerted = true;
-      z.alertState = 'hunting';
-      z.alertTimer = 4.0;
-      z.targetPoint = { x: p.x, y: p.y };
-    }
-
-    // --- Acoustic Hearing Detection from Active Noise Events ---
-    if (!isAlerted) {
+    } else {
+      // Acoustic Hearing Detection from Active Noise Events
       for (const ne of world.noiseEvents) {
         const distToNoise = Math.hypot(ne.x - z.x, ne.y - z.y);
         if (distToNoise <= ne.radius) {
-          isAlerted = true;
-          z.alertState = 'hunting';
-          z.alertTimer = 5.0;
-          targetX = ne.x;
-          targetY = ne.y;
-          z.targetPoint = { x: ne.x, y: ne.y };
+          if (z.alertState !== 'hunting') {
+            z.alertState = 'investigating';
+            z.alertTimer = 5.0;
+            z.targetPoint = { x: ne.x, y: ne.y };
+          } else {
+            // Already hunting? Update last known position if noise is closer
+            z.targetPoint = { x: ne.x, y: ne.y };
+          }
           break;
+        }
+      }
+
+      // State transitions and timers
+      if (z.alertTimer > 0) {
+        z.alertTimer -= dt;
+        if (z.alertTimer <= 0) {
+          if (z.alertState === 'hunting') {
+            // Lost track? Investigate last known position
+            z.alertState = 'investigating';
+            z.alertTimer = 4.0;
+          } else {
+            z.alertState = 'idle';
+            z.targetPoint = null;
+          }
         }
       }
     }
 
-    // Residual hunting alert decay
-    if (!isAlerted && z.alertState === 'hunting' && z.alertTimer > 0) {
-      z.alertTimer -= dt;
-      if (z.alertTimer > 0 && z.targetPoint) {
-        isAlerted = true;
-        targetX = z.targetPoint.x;
-        targetY = z.targetPoint.y;
+    const zCfg = ZOMBIE_ARCHETYPE_CONFIG[z.archetype] ?? ZOMBIE_ARCHETYPE_CONFIG.lento;
+    let targetX = z.x;
+    let targetY = z.y;
+    let wantsMove = false;
+    let moveSpeed = z.speed;
+
+    if (z.alertState === 'hunting') {
+      wantsMove = true;
+      moveSpeed = zCfg.speed * (z.archetype === 'corredor' ? 1.15 : 1.1);
+      targetX = z.targetPoint?.x ?? p.x;
+      targetY = z.targetPoint?.y ?? p.y;
+    } else if (z.alertState === 'investigating') {
+      wantsMove = true;
+      moveSpeed = zCfg.speed * 0.75;
+      targetX = z.targetPoint?.x ?? z.x;
+      targetY = z.targetPoint?.y ?? z.y;
+
+      // When reached investigation point, look around
+      if (Math.hypot(targetX - z.x, targetY - z.y) < 30) {
+        z.searchLookPhase = (z.searchLookPhase ?? 0) + dt * 2;
+        z.facingAngle += Math.sin(z.searchLookPhase) * 0.05;
+        wantsMove = false;
+      }
+    } else {
+      // IDLE / PATROL
+      if (z.patrolPauseTimer && z.patrolPauseTimer > 0) {
+        z.patrolPauseTimer -= dt;
+        wantsMove = false;
       } else {
-        z.alertState = 'idle';
-        z.targetPoint = null;
+        if (!z.patrolTarget) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = 60 + Math.random() * 120;
+          z.patrolTarget = {
+            x: (z.patrolOrigin?.x ?? z.x) + Math.cos(angle) * dist,
+            y: (z.patrolOrigin?.y ?? z.y) + Math.sin(angle) * dist,
+          };
+          // Keep patrol in world bounds
+          z.patrolTarget.x = Math.max(40, Math.min(world.worldWidth - 40, z.patrolTarget.x));
+          z.patrolTarget.y = Math.max(40, Math.min(world.worldHeight - 40, z.patrolTarget.y));
+        }
+        wantsMove = true;
+        moveSpeed = zCfg.speed * 0.45;
+        targetX = z.patrolTarget.x;
+        targetY = z.patrolTarget.y;
+
+        if (Math.hypot(targetX - z.x, targetY - z.y) < 15) {
+          z.patrolTarget = null;
+          z.patrolPauseTimer = 1.0 + Math.random() * 3.5;
+          wantsMove = false;
+        }
       }
     }
 
-    const zCfg = ZOMBIE_ARCHETYPE_CONFIG[z.archetype] ?? ZOMBIE_ARCHETYPE_CONFIG.lento;
-
-    if (isAlerted) {
+    if (wantsMove) {
       const tdx = targetX - z.x;
       const tdy = targetY - z.y;
       const desiredAngle = Math.atan2(tdy, tdx);
 
-      // Parameterized angular turning per archetype (instead of fixed constant)
-      const turnDiff =
-        ((desiredAngle - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+      const turnDiff = ((desiredAngle - z.facingAngle + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
       const turnRate = z.turnRateRad ?? zCfg.turnRateRad;
       z.facingAngle += turnDiff * Math.min(1, dt * turnRate);
 
@@ -2183,6 +2615,7 @@ export function stepWorld(
 
       // Start attack windup if within attack range of player
       if (
+        z.alertState === 'hunting' &&
         distToPlayer <= z.attackRange + p.radius &&
         z.attackCooldown <= 0 &&
         activeWindups < 3 &&
@@ -2196,14 +2629,27 @@ export function stepWorld(
         continue;
       }
 
-      // Movement behavior policy by archetype with smooth velocity acceleration
+      // Movement behavior policy by archetype
       let moveAngle = desiredAngle;
-      if (z.archetype === 'corredor' && distToPlayer > 95) {
+      if (z.archetype === 'corredor' && z.alertState === 'hunting' && distToPlayer > 95) {
         moveAngle += z.flankSign * 0.45;
       }
 
-      const targetVx = Math.cos(moveAngle) * z.speed;
-      const targetVy = Math.sin(moveAngle) * z.speed;
+      // Simple Crowd Avoidance
+      let avoidanceX = 0;
+      let avoidanceY = 0;
+      for (const other of otherZombies) {
+        if (other.id === z.id) continue;
+        const dOther = Math.hypot(other.x - z.x, other.y - z.y);
+        if (dOther < z.radius + other.radius + 12) {
+          const aOther = Math.atan2(z.y - other.y, z.x - other.x);
+          avoidanceX += Math.cos(aOther) * 45;
+          avoidanceY += Math.sin(aOther) * 45;
+        }
+      }
+
+      const targetVx = Math.cos(moveAngle) * moveSpeed + avoidanceX;
+      const targetVy = Math.sin(moveAngle) * moveSpeed + avoidanceY;
       const accelBlend = Math.min(1, dt * 14);
       z.vx += (targetVx - z.vx) * accelBlend;
       z.vy += (targetVy - z.vy) * accelBlend;
@@ -2219,6 +2665,18 @@ export function stepWorld(
         world.worldWidth,
         world.worldHeight
       );
+
+      // Detect if stuck
+      if (Math.hypot(movedZ.x - z.x, movedZ.y - z.y) < moveSpeed * 0.2 * dt) {
+        z.stuckTimer = (z.stuckTimer ?? 0) + dt;
+        if (z.stuckTimer > 0.5) {
+          // Try to slide around
+          z.facingAngle += (z.avoidanceDir ?? 1) * 0.1;
+        }
+      } else {
+        z.stuckTimer = 0;
+      }
+
       z.x = movedZ.x;
       z.y = movedZ.y;
 
@@ -2538,6 +2996,26 @@ export function applyExtractionToStash(
   const activeId = stash.activeSurvivorId ?? currentSurvivors[0]?.id ?? 'surv_elena';
   const nextDay = (stash.day ?? 1) + 1;
 
+  // Merge visited districts, completed objectives, and discovered environmental intel
+  const mergedDistricts = Array.from(
+    new Set<DistrictId>([
+      ...(stash.discoveredDistricts ?? ['vila_esperanca']),
+      ...(world.visitedDistricts ?? [world.districtId]),
+    ])
+  );
+  const completedInRun = (world.objectives ?? [])
+    .filter((o) => o.completed)
+    .map((o) => o.id);
+  const mergedObjectives = Array.from(
+    new Set<string>([...(stash.completedObjectiveIds ?? []), ...completedInRun])
+  );
+  const mergedIntel = Array.from(
+    new Set<string>([
+      ...(stash.discoveredIntelIds ?? []),
+      ...(world.discoveredIntelIds ?? []),
+    ])
+  );
+
   if (world.status === 'extracted') {
     const nextStash: ActionLootBag = {
       comida: stash.totalStash.comida + world.runLoot.comida,
@@ -2562,15 +3040,24 @@ export function applyExtractionToStash(
       day: nextDay,
       totalStash: nextStash,
       survivors: nextSurvivors,
+      discoveredDistricts: mergedDistricts,
+      completedObjectiveIds: mergedObjectives,
+      discoveredIntelIds: mergedIntel,
       runsStarted: stash.runsStarted + 1,
       runsExtracted: stash.runsExtracted + 1,
       totalZombiesKilled: stash.totalZombiesKilled + world.zombiesKilled,
       extractedRunIds: [...stash.extractedRunIds, world.runId].slice(-50),
       lastRunSummary: {
         outcome: 'extracted',
+        districtId: world.districtId,
+        districtName: world.districtName,
+        lootCollected: { ...world.runLoot },
         lootGained: { ...world.runLoot },
+        lootLost: createEmptyLootBag(),
         zombiesKilled: world.zombiesKilled,
         durationSeconds: Math.round(world.elapsedTime),
+        objectivesCompleted: completedInRun.length,
+        visitedDistricts: [...(world.visitedDistricts ?? [world.districtId])],
       },
       shelterLog: [
         `Dia ${nextDay}: Extração bem-sucedida em ${world.districtName} (+${world.runLoot.comida} Comida, +${world.runLoot.materiais} Mat).`,
@@ -2583,7 +3070,17 @@ export function applyExtractionToStash(
   }
 
   if (world.status === 'dead') {
-    // Active survivor suffers severe trauma or falls; select next available survivor if needed
+    const penalty = calculateDeathLootPenalty(world.runLoot);
+
+    // Recover the preserved 50% of temporary incursion loot into permanent stash;
+    // never deduct from previously extracted permanent resources.
+    const nextStash: ActionLootBag = {
+      comida: stash.totalStash.comida + penalty.recovered.comida,
+      medicamentos: stash.totalStash.medicamentos + penalty.recovered.medicamentos,
+      municao: stash.totalStash.municao + penalty.recovered.municao,
+      materiais: stash.totalStash.materiais + penalty.recovered.materiais,
+    };
+
     const nextSurvivors: ShelterSurvivor[] = currentSurvivors.map((s) => {
       if (s.id !== activeId) return s;
       return {
@@ -2598,20 +3095,30 @@ export function applyExtractionToStash(
     const updated: PersistentShelterStash = {
       ...stash,
       day: nextDay,
+      totalStash: nextStash,
       survivors: nextSurvivors,
       activeSurvivorId: healthyFallback,
+      discoveredDistricts: mergedDistricts,
+      completedObjectiveIds: mergedObjectives,
+      discoveredIntelIds: mergedIntel,
       runsStarted: stash.runsStarted + 1,
       runsDied: stash.runsDied + 1,
       totalZombiesKilled: stash.totalZombiesKilled + world.zombiesKilled,
       extractedRunIds: [...stash.extractedRunIds, world.runId].slice(-50),
       lastRunSummary: {
         outcome: 'dead',
-        lootGained: createEmptyLootBag(),
+        districtId: world.districtId,
+        districtName: world.districtName,
+        lootCollected: penalty.collected,
+        lootGained: penalty.recovered,
+        lootLost: penalty.lost,
         zombiesKilled: world.zombiesKilled,
         durationSeconds: Math.round(world.elapsedTime),
+        objectivesCompleted: completedInRun.length,
+        visitedDistricts: [...(world.visitedDistricts ?? [world.districtId])],
       },
       shelterLog: [
-        `Dia ${nextDay}: Incursão falhou em ${world.districtName}. O batedor retornou gravemente ferido e sem o saque.`,
+        `Dia ${nextDay}: Baixa em ${world.districtName}. 50% do saque temporário foi perdido e a metade preservada retornou ao estoque.`,
         ...(stash.shelterLog ?? []),
       ].slice(0, 14),
       updatedAt: new Date().toISOString(),

@@ -45,7 +45,7 @@ interface HudReadout {
   zombiesRemaining: number;
   promptLabel: string | null;
   promptActionVerb: string | null;
-  promptType: 'loot' | 'extraction' | null;
+  promptType: 'loot' | 'extraction' | 'transition' | null;
   isSearchingLoot: boolean;
   lootSearchProgress: number;
   banner: string;
@@ -61,6 +61,11 @@ interface HudReadout {
   isHealing: boolean;
   healingProgress: number;
   healingDuration: number;
+  activeObjectiveText: string | null;
+  objectivesCompletedCount: number;
+  objectivesTotalCount: number;
+  visitedDistrictsCount: number;
+  activeLootClue: string | null;
   minimap: MinimapSnapshot;
 }
 
@@ -110,6 +115,24 @@ function buildHudReadout(w: ActionWorldState): HudReadout {
     isHealing: !!w.player.healing?.active,
     healingProgress: w.player.healing ? w.player.healing.progress : 0,
     healingDuration: w.player.healing ? w.player.healing.duration : 1,
+    activeObjectiveText: (() => {
+      const objs = w.objectives ?? [];
+      const currentDistrictObj = objs.find(
+        (o) => o.districtId === w.districtId && !o.completed
+      );
+      const fallbackObj = objs.find((o) => !o.completed) ?? objs[0];
+      const chosen = currentDistrictObj ?? fallbackObj;
+      if (!chosen) return null;
+      return chosen.completed
+        ? `✓ ${chosen.title}`
+        : `◎ ${chosen.title}`;
+    })(),
+    objectivesCompletedCount: (w.objectives ?? []).filter((o) => o.completed).length,
+    objectivesTotalCount: (w.objectives ?? []).length,
+    visitedDistrictsCount: (w.visitedDistricts ?? [w.districtId]).length,
+    activeLootClue: w.activeLooting
+      ? w.lootSpots.find((s) => s.id === w.activeLooting!.spotId)?.clueText ?? null
+      : null,
     minimap,
   };
 }
@@ -566,25 +589,23 @@ export function PhaserArena({
               }`}
             >
               {/* Vitals Block (HP & Stamina) */}
-              <div className={isLandscape ? 'w-24 lg:w-32 space-y-1' : 'w-full space-y-1'}>
+              <div className={isLandscape ? 'w-24 lg:w-32 space-y-1.5' : 'w-full space-y-1.5'}>
                 {/* HP Bar */}
                 <div className="space-y-0.5">
                   <div className="flex items-center justify-between text-[9px] leading-none">
-                    <span className="font-bold uppercase tracking-wider text-[#b8afa4]">
-                      Saúde
+                    <span className="font-bold uppercase tracking-wider text-[#ef4444] flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" /> Saúde
                     </span>
                     <span className="font-mono-tabular font-bold text-[#ebe5dc]">
-                      {hud.hp}/{hud.maxHp}
+                      {hud.hp}%
                     </span>
                   </div>
-                  <div className="h-1.5 w-full bg-[#090807] border border-[#241f1b] overflow-hidden">
+                  <div className="h-2 w-full bg-[#090807] border border-[#241f1b] overflow-hidden rounded-full">
                     <div
-                      className={`h-full transition-transform duration-100 origin-left ${
+                      className={`h-full transition-transform duration-200 origin-left ${
                         hud.hp <= 30
-                          ? 'bg-[#9e2a22]'
-                          : hud.hp <= 60
-                          ? 'bg-[#b86f24]'
-                          : 'bg-[#3e6b4e]'
+                          ? 'bg-gradient-to-r from-[#7f1d1d] to-[#ef4444]'
+                          : 'bg-gradient-to-r from-[#166534] to-[#22c55e]'
                       }`}
                       style={{ transform: `scaleX(${hpPercent / 100})` }}
                     />
@@ -594,16 +615,16 @@ export function PhaserArena({
                 {/* Stamina Bar */}
                 <div className="space-y-0.5">
                   <div className="flex items-center justify-between text-[8px] leading-none">
-                    <span className="uppercase tracking-wider text-[#8c8277]">
+                    <span className="uppercase tracking-wider text-[#38bdf8] font-bold">
                       Fôlego
                     </span>
                     <span className="font-mono-tabular text-[#b8afa4]">
                       {hud.stamina}%
                     </span>
                   </div>
-                  <div className="h-1 w-full bg-[#090807] border border-[#1f1a17] overflow-hidden">
+                  <div className="h-1.5 w-full bg-[#090807] border border-[#1f1a17] overflow-hidden rounded-full">
                     <div
-                      className="h-full bg-[#b8732a] transition-transform duration-75 origin-left"
+                      className="h-full bg-gradient-to-r from-[#0369a1] to-[#38bdf8] transition-transform duration-75 origin-left"
                       style={{ transform: `scaleX(${staminaPercent / 100})` }}
                     />
                   </div>
@@ -614,28 +635,33 @@ export function PhaserArena({
               <div
                 className={
                   isLandscape
-                    ? 'pl-2 border-l border-[#241f1b] flex items-center gap-1.5'
-                    : 'pt-1 border-t border-[#241f1b] flex items-center justify-between gap-1.5'
+                    ? 'pl-2 border-l border-[#241f1b] flex items-center gap-2'
+                    : 'pt-1 border-t border-[#241f1b] flex items-center justify-between gap-2'
                 }
               >
-                <div className="min-w-0">
-                  <div className="text-[9px] uppercase tracking-wider text-[#c87a28] font-bold truncate leading-tight">
-                    {hud.weapon === 'pistola' ? 'Pistola 9mm' : 'Facão Tático'}
+                <div className="min-w-[60px]">
+                  <div className="text-[9px] uppercase tracking-wider text-[#f59e0b] font-black truncate leading-tight flex items-center gap-1">
+                    {hud.weapon === 'pistola' ? '🔫 PISTOLA' : '🗡️ FACÃO'}
                   </div>
-                  <div className="font-mono-tabular text-[11px] font-bold text-[#ebe5dc] leading-tight">
+                  <div className="mt-0.5 space-y-1">
                     {hud.weapon === 'pistola' ? (
-                      hud.isReloading ? (
-                        <span className="text-[#c87a28] text-[9px]">RECARGA...</span>
-                      ) : (
-                        <span className={hud.ammoInClip === 0 ? 'text-[#c94a38]' : ''}>
-                          {hud.ammoInClip}
-                          <span className="text-[9px] text-[#8c8277]">
-                            /{hud.ammoReserve}
+                      <>
+                        <div className="flex items-end gap-1 leading-none">
+                          <span className={`font-mono-tabular text-sm font-black ${hud.ammoInClip === 0 ? 'text-[#ef4444]' : 'text-[#ebe5dc]'}`}>
+                            {hud.ammoInClip}
                           </span>
-                        </span>
-                      )
+                          <span className="text-[10px] font-bold text-[#8c8277] mb-0.5">/{hud.ammoReserve}</span>
+                        </div>
+                        {/* Ammo Clip Capacity Bar */}
+                        <div className="h-1 w-full bg-[#090807] border border-[#241f1b] overflow-hidden rounded-full">
+                           <div
+                             className={`h-full transition-all duration-300 origin-left ${hud.isReloading ? 'bg-[#f59e0b] animate-pulse' : 'bg-[#e09132]'}`}
+                             style={{ transform: `scaleX(${hud.isReloading ? 1 : hud.ammoInClip / hud.clipSize})` }}
+                           />
+                        </div>
+                      </>
                     ) : (
-                      <span className="text-[9px] text-[#52b788]">Curto Alcance</span>
+                      <div className="text-[9px] font-bold text-[#52b788] uppercase tracking-widest leading-none">C. CORPO</div>
                     )}
                   </div>
                 </div>
@@ -671,19 +697,44 @@ export function PhaserArena({
                     {timeOfDayLabel}
                   </span>
                   <span aria-hidden="true" className="text-[#4a3e35] shrink-0">·</span>
-                  <span className="font-bold uppercase tracking-wider text-[#e09132] truncate max-w-[90px] md:max-w-[150px] lg:max-w-[200px]">
+                  <span
+                    data-testid="hud-district-name"
+                    className="font-bold uppercase tracking-wider text-[#e09132] truncate max-w-[90px] md:max-w-[150px] lg:max-w-[200px]"
+                  >
                     {hud.isInsideBuilding && hud.currentBuildingName
                       ? `🏢 ${hud.currentBuildingName}`
                       : hud.districtName}
                   </span>
                   <span aria-hidden="true" className="text-[#4a3e35] shrink-0">·</span>
                   <span className="font-bold uppercase tracking-wider text-[#52b788] font-mono-tabular shrink-0">
-                    Abrigo {hud.distToExtractionMeters}m
+                    Extração {hud.distToExtractionMeters}m
                   </span>
+                  {hud.objectivesTotalCount > 0 && (
+                    <>
+                      <span aria-hidden="true" className="text-[#4a3e35] shrink-0 hidden sm:inline">·</span>
+                      <span
+                        data-testid="hud-objective-summary"
+                        className="hidden sm:inline font-bold uppercase tracking-wider text-[#38bdf8] font-mono-tabular shrink-0"
+                      >
+                        Obj {hud.objectivesCompletedCount}/{hud.objectivesTotalCount}
+                      </span>
+                    </>
+                  )}
                 </div>
                 {!isCompactLandscape && (
-                  <div className="text-[9px] text-[#b8afa4] bg-[#0d0b09]/80 px-2 py-0.5 rounded-sm border border-[#211c18] truncate max-w-xs">
-                    {hud.banner}
+                  <div className="flex flex-col items-center gap-1">
+                    <div className="text-[10px] font-bold text-[#d6cec2] bg-[#0d0b09]/90 px-3 py-1 rounded-sm border border-[#382f28] shadow-md flex items-center gap-2">
+                      <span className="text-[#38bdf8]">{hud.activeObjectiveText ?? 'EXPLORE A CIDADE'}</span>
+                      {hud.activeLootClue && (
+                        <>
+                          <span className="text-[#4a3e35]">|</span>
+                          <span className="text-[#fef3c7] italic">"{hud.activeLootClue}"</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-[9px] text-[#8c8277] uppercase tracking-widest animate-pulse">
+                      {hud.banner}
+                    </div>
                   </div>
                 )}
               </div>
@@ -695,46 +746,39 @@ export function PhaserArena({
               className="pointer-events-auto shrink-0 flex items-start gap-1"
             >
               <div
-                className={`rounded-sm bg-[#110f0d]/88 border px-2 py-1 shadow-lg ${
-                  hud.isBackpackFull ? 'border-[#c94a38]' : 'border-[#2e2722]'
+                className={`rounded-sm bg-[#110f0d]/88 border px-2.5 py-1.5 shadow-lg ${
+                  hud.isBackpackFull ? 'border-[#ef4444] animate-pulse' : 'border-[#2e2722]'
                 }`}
                 aria-label="Saque coletado na incursão"
               >
-                <div className="flex items-center justify-between gap-1.5 text-[9px] font-bold uppercase tracking-wider mb-0.5 whitespace-nowrap">
+                <div className="flex items-center justify-between gap-2 text-[9px] font-black uppercase tracking-wider mb-1.5 whitespace-nowrap">
                   <span className={hud.isBackpackFull ? 'text-[#ef4444]' : 'text-[#8c8277]'}>
-                    Mochila {hud.lootTotal}/{hud.maxCarryCapacity}
-                    {hud.isBackpackFull ? ' (CHEIA)' : ''}
+                    🎒 MOCHILA {hud.lootTotal}/{hud.maxCarryCapacity}
                   </span>
-                  {!isLandscape && (
-                    <span className="text-[#52b788] font-mono-tabular">
-                      {hud.distToExtractionMeters}m
-                    </span>
-                  )}
                 </div>
-                <div className="grid grid-cols-4 gap-x-1.5 gap-y-0.5">
-                  <div className="flex items-center gap-0.5">
-                    <ResourceIconSvg type="comida" className="w-3 h-3 shrink-0" />
-                    <span className="font-mono-tabular text-[10px] lg:text-[11px] font-bold text-[#ebe5dc]">
-                      {hud.lootComida}
-                    </span>
+                {/* Backpack Capacity Bar */}
+                <div className="h-1.5 w-full bg-[#090807] border border-[#241f1b] overflow-hidden rounded-full mb-2">
+                  <div
+                    className={`h-full transition-all duration-300 origin-left ${hud.isBackpackFull ? 'bg-[#ef4444]' : 'bg-[#52b788]'}`}
+                    style={{ transform: `scaleX(${Math.min(1, hud.lootTotal / hud.maxCarryCapacity)})` }}
+                  />
+                </div>
+                <div className="grid grid-cols-4 gap-x-2">
+                  <div className="flex flex-col items-center">
+                    <ResourceIconSvg type="comida" className="w-3 h-3 mb-0.5" />
+                    <span className="font-mono text-[10px] font-black text-[#ebe5dc]">{hud.lootComida}</span>
                   </div>
-                  <div className="flex items-center gap-0.5">
-                    <ResourceIconSvg type="medicamentos" className="w-3 h-3 shrink-0" />
-                    <span className="font-mono-tabular text-[10px] lg:text-[11px] font-bold text-[#ebe5dc]">
-                      {hud.lootMedicamentos}
-                    </span>
+                  <div className="flex flex-col items-center">
+                    <ResourceIconSvg type="medicamentos" className="w-3 h-3 mb-0.5" />
+                    <span className="font-mono text-[10px] font-black text-[#ebe5dc]">{hud.lootMedicamentos}</span>
                   </div>
-                  <div className="flex items-center gap-0.5">
-                    <ResourceIconSvg type="municao" className="w-3 h-3 shrink-0" />
-                    <span className="font-mono-tabular text-[10px] lg:text-[11px] font-bold text-[#ebe5dc]">
-                      {hud.lootMunicao}
-                    </span>
+                  <div className="flex flex-col items-center">
+                    <ResourceIconSvg type="municao" className="w-3 h-3 mb-0.5" />
+                    <span className="font-mono text-[10px] font-black text-[#ebe5dc]">{hud.lootMunicao}</span>
                   </div>
-                  <div className="flex items-center gap-0.5">
-                    <ResourceIconSvg type="materiais" className="w-3 h-3 shrink-0" />
-                    <span className="font-mono-tabular text-[10px] lg:text-[11px] font-bold text-[#ebe5dc]">
-                      {hud.lootMateriais}
-                    </span>
+                  <div className="flex flex-col items-center">
+                    <ResourceIconSvg type="materiais" className="w-3 h-3 mb-0.5" />
+                    <span className="font-mono text-[10px] font-black text-[#ebe5dc]">{hud.lootMateriais}</span>
                   </div>
                 </div>
               </div>
@@ -848,6 +892,8 @@ export function PhaserArena({
                 className={`min-h-[34px] px-3 py-1 rounded-sm font-display text-xs font-bold uppercase tracking-wider shadow-xl border transition-transform active:scale-95 flex items-center gap-1.5 whitespace-nowrap touch-none ${
                   hud.promptType === 'extraction'
                     ? 'bg-[#132a1f]/95 border-[#52b788] text-[#ebe5dc]'
+                    : hud.promptType === 'transition'
+                    ? 'bg-[#102330]/95 border-[#38bdf8] text-[#e0f2fe]'
                     : hud.isBackpackFull
                     ? 'bg-[#2b1412]/95 border-[#ef4444] text-[#fca5a5]'
                     : 'bg-[#1c1612]/95 border-[#e09132] text-[#fef3c7]'
@@ -892,6 +938,8 @@ export function PhaserArena({
                       className={`min-h-[34px] px-3 py-1 rounded-sm font-display text-xs font-bold uppercase tracking-wider shadow-xl border transition-transform active:scale-95 flex items-center gap-1.5 whitespace-nowrap touch-none ${
                         hud.promptType === 'extraction'
                           ? 'bg-[#132a1f]/95 border-[#52b788] text-[#ebe5dc]'
+                          : hud.promptType === 'transition'
+                          ? 'bg-[#102330]/95 border-[#38bdf8] text-[#e0f2fe]'
                           : hud.isBackpackFull
                           ? 'bg-[#2b1412]/95 border-[#ef4444] text-[#fca5a5]'
                           : 'bg-[#1c1612]/95 border-[#e09132] text-[#fef3c7]'
@@ -956,7 +1004,7 @@ export function PhaserArena({
                   </span>
                 </button>
 
-                {/* Contextual Search / Extract Button */}
+                {/* Contextual Search / Extract / Transit Button */}
                 <button
                   type="button"
                   tabIndex={-1}
@@ -971,12 +1019,16 @@ export function PhaserArena({
                     hud.promptLabel || hud.isSearchingLoot
                       ? hud.promptType === 'extraction'
                         ? 'bg-[#193326]/95 border-[#52b788] text-[#ebe5dc]'
+                        : hud.promptType === 'transition'
+                        ? 'bg-[#102330]/95 border-[#38bdf8] text-[#e0f2fe]'
                         : 'bg-[#261d14]/95 border-[#e09132] text-[#fef3c7]'
                       : 'bg-[#12100e]/65 border-[#241f1b] text-[#6e655c] opacity-60'
                   }`}
                 >
                   {hud.promptType === 'extraction'
                     ? '🚪 Extrair'
+                    : hud.promptType === 'transition'
+                    ? '🛣️ Avançar'
                     : hud.isSearchingLoot
                     ? `🔍 ${hud.lootSearchProgress}%`
                     : '🔍 Vasculhar'}

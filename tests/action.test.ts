@@ -4,6 +4,7 @@ import {
   applyDamageToPlayer,
   applyExtractionToStash,
   buildMinimapSnapshot,
+  calculateDeathLootPenalty,
   computeEvacuationProgress,
   computeTacticalCameraView,
   createDefaultInputState,
@@ -17,6 +18,7 @@ import {
   selectActiveSurvivor,
   stepWorld,
   toggleFlashlight,
+  transitionToDistrict,
   triggerInteract,
   tryDirectObjectInteractAtWorldPoint,
   upgradeShelterStation,
@@ -94,14 +96,28 @@ test('Top-Down Action: coleta de saque, extração sem duplicação e perda ao m
   stash = applyExtractionToStash(stash, world);
   assert.equal(stash.totalStash.comida, foodBefore + gained);
 
-  // Morte antes de extrair perde o saque da mochila
+  // Morte antes de extrair aplica penalidade parcial de 50% ao saque da incursão e recupera os outros 50%
   const deadWorld = createInitialWorldState('node_dead');
-  deadWorld.runLoot.comida = 50;
+  deadWorld.runLoot.comida = 10;
+  deadWorld.runLoot.medicamentos = 5; // ímpar: preserva floor(5*0.5)=2, perde 3
   applyDamageToPlayer(deadWorld, 200, 'Bruto Blindado');
   assert.equal(deadWorld.status, 'dead');
 
+  const penalty = calculateDeathLootPenalty(deadWorld.runLoot);
+  assert.equal(penalty.lost.comida, 5);
+  assert.equal(penalty.recovered.comida, 5);
+  assert.equal(penalty.lost.medicamentos, 3);
+  assert.equal(penalty.recovered.medicamentos, 2);
+
   const afterDeath = applyExtractionToStash(stash, deadWorld);
-  assert.equal(afterDeath.totalStash.comida, foodBefore + gained);
+  assert.equal(afterDeath.totalStash.comida, foodBefore + gained + 5);
+  assert.equal(afterDeath.totalStash.medicamentos, stash.totalStash.medicamentos + 2);
+  assert.equal(afterDeath.lastRunSummary?.lootLost?.comida, 5);
+  assert.equal(afterDeath.lastRunSummary?.lootGained.comida, 5);
+
+  // Não duplica penalidade/recuperação se chamado novamente para a mesma runId
+  const afterDuplicateDeath = applyExtractionToStash(afterDeath, deadWorld);
+  assert.equal(afterDuplicateDeath.totalStash.comida, afterDeath.totalStash.comida);
 });
 
 test('Top-Down Action: projeção do minimapa com jogador e ponto de extração na Vila Esperança', () => {
@@ -489,6 +505,72 @@ test('Top-Down Action: enquadramento tático da câmera em orientação horizont
   assert.equal(desk1440.isLandscape, true);
   assert.equal(desk1440.zoom, 1);
 });
+
+test('Top-Down Action: cidade conectada preserva saque, estado dos contêineres e inimigos ao transitar entre distritos', () => {
+  const world = createInitialWorldState('node_connected_city', 'vila_esperanca');
+  assert.equal(world.districtId, 'vila_esperanca');
+  assert.ok(world.connections && world.connections.length >= 1);
+
+  // Saqueia o armário da Residência Santos (loot_cs_armario) na Vila Esperança -> avança objetivo e descobre relato ambiental
+  const armarioSpot = world.lootSpots.find((s) => s.id === 'loot_cs_armario')!;
+  world.player.x = armarioSpot.x;
+  world.player.y = armarioSpot.y;
+  const lootRes = triggerInteract(world);
+  assert.equal(lootRes.action, 'looted');
+  assert.equal(armarioSpot.looted, true);
+  assert.ok(world.discoveredIntelIds?.includes('intel_diario_vila'));
+
+  const objVila = world.objectives?.find((o) => o.id === 'obj_suprimentos_vila');
+  assert.ok(objVila);
+  assert.equal(objVila?.completed, true);
+
+  // Elimina o primeiro zumbi da Vila Esperança
+  world.zombies[0].dead = true;
+  world.zombies[0].hp = 0;
+  const foodBeforeTransit = world.runLoot.comida;
+
+  // Transita pela conexão leste (Av. Leste -> Centro Comercial) via interação no ponto de conexão
+  const eastConn = world.connections!.find((c) => c.toDistrict === 'centro_comercial')!;
+  world.player.x = eastConn.x;
+  world.player.y = eastConn.y;
+  const transitRes = triggerInteract(world);
+  assert.equal(transitRes.action, 'transitioned');
+  assert.equal(world.districtId, 'centro_comercial');
+  assert.equal(world.runLoot.comida, foodBeforeTransit);
+  assert.ok(world.visitedDistricts?.includes('vila_esperanca'));
+  assert.ok(world.visitedDistricts?.includes('centro_comercial'));
+
+  // Saqueia o cofre da Farmácia 24h no Centro Comercial -> conclui objetivo do Centro Comercial
+  const cofreSpot = world.lootSpots.find((s) => s.id === 'loot_c_cofre_farmacia')!;
+  world.player.x = cofreSpot.x;
+  world.player.y = cofreSpot.y;
+  triggerInteract(world);
+  assert.equal(cofreSpot.looted, true);
+  const objCentro = world.objectives?.find((o) => o.id === 'obj_estoque_comercial');
+  assert.equal(objCentro?.completed, true);
+
+  // Retorna para Vila Esperança e verifica que o contêiner saqueado e o zumbi abatido continuam preservados
+  const backOk = transitionToDistrict(world, 'vila_esperanca');
+  assert.equal(backOk, true);
+  assert.equal(world.districtId, 'vila_esperanca');
+  const armarioAgain = world.lootSpots.find((s) => s.id === 'loot_cs_armario')!;
+  assert.equal(armarioAgain.looted, true);
+  assert.equal(world.zombies[0].dead, true);
+
+  // Verifica arredondamento consistente da penalidade parcial de 50%:
+  // ex.: 5 medicamentos -> preserva Math.floor(5 * 0.5) = 2, perde 3
+  const oddPenalty = calculateDeathLootPenalty({
+    comida: 10,
+    medicamentos: 5,
+    municao: 0,
+    materiais: 0,
+  });
+  assert.equal(oddPenalty.recovered.comida, 5);
+  assert.equal(oddPenalty.lost.comida, 5);
+  assert.equal(oddPenalty.recovered.medicamentos, 2);
+  assert.equal(oddPenalty.lost.medicamentos, 3);
+});
+
 
 
 

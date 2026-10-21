@@ -111,6 +111,7 @@ export class SurvivalActionScene extends Phaser.Scene {
   private shotFlashTimer = 0;
   private walkAnimTime = 0;
   private hudSyncAccumulator = 0;
+  private renderedDistrictId = '';
 
   constructor() {
     super({ key: 'SurvivalActionScene' });
@@ -211,6 +212,15 @@ export class SurvivalActionScene extends Phaser.Scene {
         this.textures.get(key).setFilter(Phaser.Textures.FilterMode.NEAREST);
       }
     });
+
+    // Create a 2x2 white pixel texture for particles
+    if (!this.textures.exists('pixel')) {
+      const pG = this.make.graphics({ x: 0, y: 0 });
+      pG.fillStyle(0xffffff, 1);
+      pG.fillRect(0, 0, 2, 2);
+      pG.generateTexture('pixel', 2, 2);
+      pG.destroy();
+    }
 
     this.cameras.main.setBounds(
       0,
@@ -410,6 +420,11 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.staticLayerGroup.clear(true, true);
     this.lootSpriteMap.clear();
     this.zombieCorpseDrawn.clear();
+    for (const spr of this.zombieSpriteMap.values()) {
+      spr.destroy();
+    }
+    this.zombieSpriteMap.clear();
+    this.renderedDistrictId = this.worldState.districtId;
 
     const W = this.worldState.worldWidth;
     const H = this.worldState.worldHeight;
@@ -615,7 +630,7 @@ export class SurvivalActionScene extends Phaser.Scene {
       });
     }
 
-    // 4. Extraction Zone (Portão do Abrigo - Fortified Southwest Safe Haven Gate)
+    // 4. Extraction Zone (Fortified Safe Haven Gate / District Extraction Point)
     const ext = this.worldState.extractionZone;
     g.fillStyle(0x11241b, 0.72);
     g.fillCircle(ext.x, ext.y, ext.radius);
@@ -625,14 +640,72 @@ export class SurvivalActionScene extends Phaser.Scene {
     g.lineStyle(2, 0x52b788, 0.35);
     g.strokeCircle(ext.x, ext.y, ext.radius * 0.62);
 
-    const extLabel = this.add.text(ext.x - 52, ext.y + ext.radius + 6, 'PORTÃO DO ABRIGO', {
-      fontFamily: 'Oswald, sans-serif',
-      fontSize: '12px',
-      color: '#52b788',
-      fontStyle: 'bold',
-    });
-    extLabel.setDepth(3).setAlpha(0.85);
+    const extLabel = this.add.text(
+      ext.x - 64,
+      ext.y + ext.radius + 6,
+      (ext.label || 'PONTO DE EXTRAÇÃO').toUpperCase(),
+      {
+        fontFamily: 'Oswald, sans-serif',
+        fontSize: '12px',
+        color: '#52b788',
+        fontStyle: 'bold',
+      }
+    );
+    extLabel.setDepth(3).setAlpha(0.88);
     this.staticLayerGroup.add(extLabel);
+
+    // 4b. Connected City Street Passages (Avenues & Corridors linking neighboring districts)
+    for (const conn of this.worldState.connections ?? []) {
+      // Paved asphalt passage extending through the perimeter wall gap
+      if (conn.direction === 'east' || conn.direction === 'west') {
+        const rx = conn.direction === 'east' ? W - 92 : 0;
+        g.fillStyle(0x141312, 0.98);
+        g.fillRect(rx, conn.y - 96, 92, 192);
+        g.fillStyle(0xd99b26, 0.55);
+        g.fillRect(rx + 12, conn.y - 3, 28, 6);
+        g.fillRect(rx + 52, conn.y - 3, 28, 6);
+      } else {
+        const ry = conn.direction === 'south' ? H - 92 : 0;
+        g.fillStyle(0x141312, 0.98);
+        g.fillRect(conn.x - 115, ry, 230, 92);
+        g.fillStyle(0xd99b26, 0.55);
+        g.fillRect(conn.x - 3, ry + 12, 6, 28);
+        g.fillRect(conn.x - 3, ry + 52, 6, 28);
+      }
+
+      // Transit zone circle on the avenue
+      g.fillStyle(0x1e293b, 0.72);
+      g.fillCircle(conn.x, conn.y, conn.radius);
+      g.lineStyle(2, 0x38bdf8, 0.82);
+      g.strokeCircle(conn.x, conn.y, conn.radius);
+      g.lineStyle(1.5, 0xf59e0b, 0.48);
+      g.strokeCircle(conn.x, conn.y, conn.radius * 0.65);
+
+      const arrowPrefix =
+        conn.direction === 'east'
+          ? 'LESTE → '
+          : conn.direction === 'west'
+          ? '← OESTE '
+          : conn.direction === 'south'
+          ? 'SUL ↓ '
+          : '↑ NORTE ';
+      const connLabelX = Math.max(18, Math.min(W - 245, conn.x - 76));
+      const connLabel = this.add.text(
+        connLabelX,
+        conn.direction === 'south' ? conn.y - conn.radius - 20 : conn.y + conn.radius + 6,
+        `${arrowPrefix}${conn.toDistrictName.toUpperCase()}`,
+        {
+          fontFamily: 'Oswald, sans-serif',
+          fontSize: '12px',
+          color: '#38bdf8',
+          fontStyle: 'bold',
+          backgroundColor: '#090d14cc',
+          padding: { x: 5, y: 2 },
+        }
+      );
+      connLabel.setDepth(4).setAlpha(0.92);
+      this.staticLayerGroup.add(connLabel);
+    }
 
     // 5. Solid Obstacles: Pixel-Art Brick Walls, Abandoned Vehicles, Store Shelves & Concrete Barriers
     const vehicleFrameById: Record<string, number> = {
@@ -746,6 +819,81 @@ export class SurvivalActionScene extends Phaser.Scene {
     }
   }
 
+  private renderImpacts(world: ActionWorldState) {
+    if (!world.impactEvents) return;
+
+    for (const impact of world.impactEvents) {
+      if (!this.processedImpacts) this.processedImpacts = new Set<string>();
+      if (this.processedImpacts.has(impact.id)) continue;
+      this.processedImpacts.add(impact.id);
+
+      // Clean up old processed IDs occasionally
+      if (this.processedImpacts.size > 200) {
+        this.processedImpacts.clear();
+      }
+
+      this.spawnImpactVisual(impact);
+    }
+  }
+
+  private spawnImpactVisual(impact: any) {
+    const { x, y, angle, kind } = impact;
+    
+    // Impact Flash
+    const flash = this.add.circle(x, y, 3, 0xffffff, 0.9);
+    flash.setDepth(30);
+    this.tweens.add({
+      targets: flash,
+      alpha: 0,
+      scale: 2.5,
+      duration: 80,
+      onComplete: () => flash.destroy()
+    });
+
+    // Particles based on kind
+    let color = 0xcccccc;
+    let count = 5;
+    let speed = 120;
+    let lifespan = 350;
+
+    if (kind === 'zombie') {
+      color = 0x991b1b; // Blood red
+      count = 14;
+      speed = 180;
+      lifespan = 450;
+      
+      // Permanent blood splat on floor (graphics decal)
+      this.decalGraphics.fillStyle(0x7f1d1d, 0.45);
+      this.decalGraphics.fillCircle(x + (Math.random()-0.5)*4, y + (Math.random()-0.5)*4, 2 + Math.random() * 4);
+    } else if (kind === 'wall' || kind === 'barrier' || kind === 'crate') {
+      color = 0x64748b; // Slate gray / Dust
+      count = 7;
+      speed = 100;
+    } else if (kind === 'car') {
+      color = 0xfacc15; // Sparks / Yellow
+      count = 10;
+      speed = 220;
+      lifespan = 250;
+    }
+
+    const emitter = this.add.particles(x, y, 'pixel', {
+      speed: { min: speed * 0.4, max: speed },
+      angle: { min: Phaser.Math.RadToDeg(angle) - 40, max: Phaser.Math.RadToDeg(angle) + 40 },
+      scale: { start: 1.8, end: 0 },
+      alpha: { start: 1, end: 0 },
+      lifespan,
+      quantity: count,
+      tint: color,
+      emitting: false
+    });
+    emitter.setDepth(20);
+    emitter.explode();
+    this.time.delayedCall(lifespan + 100, () => emitter.destroy());
+  }
+
+  private processedImpacts: Set<string> = new Set();
+
+
   update(_time: number, deltaMs: number): void {
     if (!this.worldState) return;
 
@@ -754,8 +902,11 @@ export class SurvivalActionScene extends Phaser.Scene {
       this.mouseJustPressed = false;
       this.syncCameraToViewport(0);
       this.renderDynamicEntities(0);
+      this.renderImpacts(this.worldState);
       return;
     }
+
+    this.renderImpacts(this.worldState);
 
     const rawDt = deltaMs / 1000;
     const clampedDt = Math.min(Math.max(rawDt, 0), 0.05);
@@ -845,6 +996,27 @@ export class SurvivalActionScene extends Phaser.Scene {
 
     // Step simulation
     stepWorld(this.worldState, input, rawDt);
+
+    // Handle seamless connected city transition if player moved into an adjacent district
+    let districtTransitioned = false;
+    if (this.worldState.districtId !== this.renderedDistrictId) {
+      districtTransitioned = true;
+      this.buildStaticEnvironment();
+      this.syncEntitySprites();
+      this.zombiePrevHp.clear();
+      for (const z of this.worldState.zombies) {
+        this.zombiePrevHp.set(z.id, z.hp);
+      }
+      if (this.cameras?.main) {
+        this.cameras.main.setBounds(
+          0,
+          0,
+          this.worldState.worldWidth,
+          this.worldState.worldHeight
+        );
+        this.syncCameraToViewport(0);
+      }
+    }
 
     const p = this.worldState.player;
     this.shotFlashTimer = Math.max(0, this.shotFlashTimer - clampedDt);
@@ -963,6 +1135,7 @@ export class SurvivalActionScene extends Phaser.Scene {
     this.renderDynamicEntities(clampedDt);
 
     const immediateHudSync =
+      districtTransitioned ||
       input.toggleFlashlightJustPressed ||
       input.switchWeaponJustPressed ||
       input.interactJustPressed ||
@@ -1247,6 +1420,14 @@ export class SurvivalActionScene extends Phaser.Scene {
     const ext = w.extractionZone;
     dG.lineStyle(2, 0x52b788, 0.35 + pulse * 0.4);
     dG.strokeCircle(ext.x, ext.y, ext.radius - 6 + pulse * 5);
+
+    // 1b. Connected District Street Passage Beacons
+    for (const conn of w.connections ?? []) {
+      const isActiveConn =
+        w.activePrompt?.targetType === 'transition' && w.activePrompt.id === conn.id;
+      dG.lineStyle(isActiveConn ? 2.8 : 1.8, 0x38bdf8, (isActiveConn ? 0.65 : 0.28) + pulse * 0.32);
+      dG.strokeCircle(conn.x, conn.y, conn.radius - 5 + pulse * 4);
+    }
 
     // 2. Render Contextual Searchable Furniture & Vehicle Compartments
     for (const spot of w.lootSpots) {
